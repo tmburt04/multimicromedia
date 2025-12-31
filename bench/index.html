@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compression Testbench</title>
+    <link rel="stylesheet" href="main.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>
+                Compression Testbench
+                <span class="version" id="version">Loading...</span>
+            </h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-dot loading" id="wasm-status"></span>
+                    <span id="wasm-status-text">Loading WASM...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-dot" id="ffmpeg-status"></span>
+                    <span id="ffmpeg-status-text">FFmpeg: checking...</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="main-grid">
+            <div class="sidebar">
+                <!-- Input Panel -->
+                <div class="panel" id="input-panel">
+                    <div class="panel-header" onclick="togglePanel('input-panel')">
+                        <h2>Input</h2>
+                        <div class="panel-toggle">▼</div>
+                    </div>
+                    <div class="panel-content">
+                        <div class="drop-zone" id="drop-zone">
+                            <div class="drop-zone-icon">📁</div>
+                            <div class="drop-zone-text">
+                                Drop file here or click to browse
+                            </div>
+                            <input type="file" id="file-input" accept="image/*,audio/*,video/*">
+                        </div>
+
+                        <div class="file-info hidden" id="file-info">
+                            <div class="file-info-row">
+                                <span class="file-info-label">Name</span>
+                                <span id="file-name">-</span>
+                            </div>
+                            <div class="file-info-row">
+                                <span class="file-info-label">Type</span>
+                                <span id="file-type">-</span>
+                            </div>
+                            <div class="file-info-row">
+                                <span class="file-info-label">Size</span>
+                                <span id="file-size">-</span>
+                            </div>
+                            <div class="file-info-row">
+                                <span class="file-info-label">Dimensions</span>
+                                <span id="file-dimensions">-</span>
+                            </div>
+                        </div>
+
+                        <div class="testdata-tree" id="testdata-tree">
+                            <div class="form-section-title">Test Data</div>
+                            <div id="testdata-content">
+                                <div class="empty-state">Loading testdata...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Configuration Panel -->
+                <div class="panel" id="config-panel">
+                    <div class="panel-header" onclick="togglePanel('config-panel')">
+                        <h2>Configuration</h2>
+                        <div class="panel-toggle">▼</div>
+                    </div>
+                    <div class="panel-content">
+                        <div id="config-form">
+                            <div class="form-section">
+                                <div class="form-section-title">General</div>
+                                <div class="form-group">
+                                    <label>Quality</label>
+                                    <input type="range" id="quality" min="1" max="100" value="80">
+                                    <div class="range-value" id="quality-value">80</div>
+                                </div>
+                                <div class="form-group">
+                                    <label>Output Format</label>
+                                    <select id="output-format">
+                                        <option value="">Auto (same as input)</option>
+                                    </select>
+                                    <div class="form-hint">Convert to a different format</div>
+                                </div>
+                            </div>
+
+                            <div class="form-section" id="image-options">
+                                <div class="form-section-title">Image Options</div>
+                                <div class="form-group">
+                                    <label>Resize Width</label>
+                                    <input type="number" id="resize-width" placeholder="Auto" min="1" max="16384">
+                                </div>
+                                <div class="form-group">
+                                    <label>Resize Height</label>
+                                    <input type="number" id="resize-height" placeholder="Auto" min="1" max="16384">
+                                </div>
+                                <div class="form-group">
+                                    <label>Resize Mode</label>
+                                    <select id="resize-mode">
+                                        <option value="fit">Fit (maintain aspect)</option>
+                                        <option value="fill">Fill (crop to fit)</option>
+                                        <option value="exact">Exact (stretch)</option>
+                                        <option value="cover">Cover</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="form-section" id="audio-video-options" style="display:none;">
+                                <div class="form-section-title">Audio/Video Options</div>
+                                <div class="form-group">
+                                    <label>Trim Start (ms)</label>
+                                    <input type="number" id="trim-start" placeholder="0" min="0">
+                                </div>
+                                <div class="form-group">
+                                    <label>Trim End (ms)</label>
+                                    <input type="number" id="trim-end" placeholder="End of file" min="0">
+                                </div>
+                                <div class="form-group">
+                                    <label>Audio Bitrate</label>
+                                    <select id="audio-bitrate">
+                                        <option value="">Auto</option>
+                                        <option value="64k">64k</option>
+                                        <option value="96k">96k</option>
+                                        <option value="128k">128k</option>
+                                        <option value="192k">192k</option>
+                                        <option value="256k">256k</option>
+                                        <option value="320k">320k</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="form-section">
+                                <div class="form-section-title">Advanced</div>
+                                <div class="form-group">
+                                    <div class="checkbox-wrapper">
+                                        <input type="checkbox" id="preserve-metadata" checked>
+                                        <label for="preserve-metadata">Preserve Metadata</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="action-bar">
+                            <button class="btn btn-primary btn-block" id="compress-btn" disabled>
+                                Compress
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="main-content">
+                <!-- Results Panel -->
+                <div class="panel" id="results-panel">
+                    <div class="panel-header" onclick="togglePanel('results-panel')">
+                        <h2>Results</h2>
+                        <div class="panel-toggle">▼</div>
+                    </div>
+                    <div class="panel-content">
+                        <div id="results-empty" class="empty-state">
+                            Select a file and click Compress to see results
+                        </div>
+
+                        <div id="results-content" class="hidden">
+                            <div class="comparison-container">
+                                <div class="comparison-panel">
+                                    <div class="comparison-panel-header">
+                                        <span>Original</span>
+                                        <span id="original-size-badge">-</span>
+                                    </div>
+                                    <div class="comparison-preview" id="original-preview">
+                                        <span class="placeholder">No preview</span>
+                                    </div>
+                                </div>
+                                <div class="comparison-panel">
+                                    <div class="comparison-panel-header">
+                                        <span>Compressed</span>
+                                        <span id="compressed-size-badge">-</span>
+                                    </div>
+                                    <div class="comparison-preview" id="compressed-preview">
+                                        <span class="placeholder">No preview</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="stats-summary">
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="stats-original">-</div>
+                                    <div class="stats-card-label">Original Size</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="stats-compressed">-</div>
+                                    <div class="stats-card-label">Compressed Size</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value positive" id="stats-savings">-</div>
+                                    <div class="stats-card-label">Savings</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="stats-time">-</div>
+                                    <div class="stats-card-label">Time</div>
+                                </div>
+                            </div>
+
+                            <div class="action-bar">
+                                <button class="btn btn-primary" id="download-btn" disabled>
+                                    Download Compressed
+                                </button>
+                                <button class="btn btn-secondary" id="copy-stats-btn">
+                                    Copy Stats
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Panel -->
+                <div class="panel" id="dashboard-panel">
+                    <div class="panel-header" onclick="togglePanel('dashboard-panel')">
+                        <h2>Batch Dashboard</h2>
+                        <div class="panel-toggle">▼</div>
+                    </div>
+                    <div class="panel-content">
+                        <div class="dashboard-controls">
+                            <button class="btn btn-primary" id="run-all-btn" disabled>
+                                Run All
+                            </button>
+                            <button class="btn btn-secondary" id="stop-btn" disabled>
+                                Stop
+                            </button>
+                            <button class="btn btn-secondary" id="clear-results-btn">
+                                Clear Results
+                            </button>
+                        </div>
+
+                        <div id="batch-progress" class="hidden">
+                            <div style="display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 0.25rem;">
+                                <span id="batch-progress-text">Processing...</span>
+                                <span id="batch-progress-count">0/0</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-bar-fill" id="batch-progress-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div id="batch-summary" class="hidden">
+                            <div class="stats-summary" style="margin-top: 0; margin-bottom: 1rem;">
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="batch-total-files">0</div>
+                                    <div class="stats-card-label">Files</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="batch-total-original">-</div>
+                                    <div class="stats-card-label">Total Input</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value neutral" id="batch-total-compressed">-</div>
+                                    <div class="stats-card-label">Total Output</div>
+                                </div>
+                                <div class="stats-card">
+                                    <div class="stats-card-value positive" id="batch-total-savings">-</div>
+                                    <div class="stats-card-label">Total Savings</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="dashboard-table-wrapper">
+                            <table class="dashboard-table">
+                                <thead>
+                                    <tr>
+                                        <th class="status-cell">Status</th>
+                                        <th>File</th>
+                                        <th>Type</th>
+                                        <th>Original</th>
+                                        <th>Compressed</th>
+                                        <th>Savings</th>
+                                        <th>Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dashboard-tbody">
+                                    <tr>
+                                        <td colspan="7" class="empty-state">No files loaded</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="loading-overlay hidden" id="loading-overlay">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <div id="loading-text">Compressing...</div>
+        </div>
+    </div>
+
+    <script src="ffmpeg_bridge.js"></script>
+    <script type="module">
+        // Load FFmpeg.wasm before the main app
+        import { FFmpeg } from 'https://esm.sh/@ffmpeg/ffmpeg@0.12.10';
+        import { toBlobURL } from 'https://esm.sh/@ffmpeg/util@0.12.1';
+
+        window.FFmpegLoader = {
+            async load() {
+                try {
+                    const ffmpeg = new FFmpeg();
+                    
+                    // Load from CDN
+                    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+                    await ffmpeg.load({
+                        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+                        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                    });
+                    
+                    // Initialize the bridge
+                    await window.__ffmpeg__.initialize(ffmpeg);
+                    console.log('[FFmpeg] Loaded successfully');
+                    return true;
+                } catch (err) {
+                    console.warn('[FFmpeg] Failed to load:', err.message);
+                    return false;
+                }
+            }
+        };
+    </script>
+    <script type="module" src="index.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,19 @@
+{
+  "name": "compression-wasm-bench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "./scripts/build.sh",
+    "build:node": "./scripts/build.sh nodejs",
+    "build:web": "./scripts/build.sh web",
+    "build:all": "./scripts/build.sh all",
+    "test": "./scripts/test.sh",
+    "bench": "node bench/run.mjs",
+    "run": "./scripts/run.sh"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "sharp": "^0.33.5"
+  }
+}

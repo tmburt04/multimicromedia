@@ -1,6 +1,6 @@
 /**
  * FFmpeg Node.js Bridge
- * Uses native FFmpeg binary for Node.js environments
+ * Uses native FFmpeg binary for Node.js environments.
  */
 
 import { spawn } from 'child_process';
@@ -11,18 +11,13 @@ import { tmpdir } from 'os';
 let ffmpegPath = null;
 let isLoaded = false;
 
-/**
- * Initialize the FFmpeg bridge
- */
 async function initialize() {
     try {
-        // Try to use ffmpeg-static
         const ffmpegStatic = await import('ffmpeg-static');
         ffmpegPath = ffmpegStatic.default;
         isLoaded = true;
         return true;
     } catch {
-        // Try system ffmpeg
         ffmpegPath = 'ffmpeg';
         try {
             await execPromise(ffmpegPath, ['-version']);
@@ -55,14 +50,10 @@ function execPromise(cmd, args, options = {}) {
     });
 }
 
-/**
- * Check if FFmpeg is available
- */
 function isAvailable() {
     return isLoaded && ffmpegPath !== null;
 }
 
-// Map short format names to FFmpeg format names
 const FORMAT_MAP = {
     'mkv': 'matroska',
     'mka': 'matroska',
@@ -77,7 +68,6 @@ const FORMAT_MAP = {
     'webp': 'webp',
 };
 
-// Map format names to file extensions for output
 const EXT_MAP = {
     'matroska': 'mkv',
     'adts': 'aac',
@@ -89,12 +79,6 @@ const EXT_MAP = {
     'mjpeg': 'jpg',
 };
 
-/**
- * Execute FFmpeg with the given arguments
- * @param {string[]} args - FFmpeg arguments (without -i input)
- * @param {Uint8Array} inputData - Input file data
- * @returns {Promise<{data: Uint8Array, error?: string}>}
- */
 async function execute(args, inputData) {
     if (!isAvailable()) {
         return { error: 'FFmpeg not available' };
@@ -103,7 +87,6 @@ async function execute(args, inputData) {
     const tempDir = mkdtempSync(join(tmpdir(), 'ffmpeg-'));
     
     try {
-        // Parse args: first -f is input format hint, second -f is output format
         let inputFormat = null;
         let outputFormat = 'mp4';
         const filteredArgs = [];
@@ -114,50 +97,40 @@ async function execute(args, inputData) {
                 const fmt = args[i + 1];
                 fCount++;
                 if (fCount === 1) {
-                    // First -f: input format hint (use for extension)
                     inputFormat = fmt;
                 } else {
-                    // Second -f: output format
                     outputFormat = FORMAT_MAP[fmt] || fmt;
                     filteredArgs.push('-f', outputFormat);
                 }
-                i++; // Skip format value
+                i++;
             } else {
                 filteredArgs.push(args[i]);
             }
         }
         
-        // Use data extension for input (let FFmpeg probe the format)
-        // This is more reliable than forcing extension
         const inputExt = inputFormat || 'dat';
         const outputExt = EXT_MAP[outputFormat] || outputFormat;
         
         const inputFile = join(tempDir, `input.${inputExt}`);
         const outputFile = join(tempDir, `output.${outputExt}`);
         
-        // Write input file
         writeFileSync(inputFile, inputData);
         
-        // Build full command - let FFmpeg auto-detect input format
         const fullArgs = [
-            '-y',                    // Overwrite output
-            '-i', inputFile,         // Input file
-            ...filteredArgs,         // User args with fixed formats
-            outputFile               // Output file
+            '-y',
+            '-i', inputFile,
+            ...filteredArgs,
+            outputFile
         ];
         
-        // Execute FFmpeg
         await execPromise(ffmpegPath, fullArgs);
         
-        // Read output
         const outputData = readFileSync(outputFile);
         
-        // Cleanup
         try { unlinkSync(inputFile); } catch {}
         try { unlinkSync(outputFile); } catch {}
         try { unlinkSync(tempDir); } catch {}
         
-        // Return original if output is larger (no benefit)
         if (outputData.length >= inputData.length) {
             return { data: inputData };
         }
@@ -168,9 +141,6 @@ async function execute(args, inputData) {
     }
 }
 
-/**
- * Get FFmpeg version
- */
 async function getVersion() {
     if (!isAvailable()) {
         return 'FFmpeg not available';
@@ -183,7 +153,6 @@ async function getVersion() {
     }
 }
 
-// Register globally for Rust WASM access
 const bridge = {
     initialize,
     isAvailable,
@@ -197,5 +166,3 @@ if (typeof global !== 'undefined') {
 }
 
 export { initialize, isAvailable, execute, getVersion };
-
-

@@ -1,6 +1,8 @@
-# mmm — multimicromedia
+# multimicromedia
 
-Client-side media compression. Pure WASM. Zero server.
+Client-side media compression via WebAssembly. Zero server dependency.
+
+> **Live demo:** [notschmee.com/widgets/image-compression](https://notschmee.com/widgets/image-compression)
 
 ## Formats
 
@@ -13,26 +15,26 @@ Client-side media compression. Pure WASM. Zero server.
 ## Install
 
 ```bash
-wasm-pack build --target web --release
+./scripts/build.sh web
 ```
 
-## API
+## Usage
 
 ```javascript
-import init, { compress, analyze_file, detect_file_type } from './pkg/compression_wasm.js';
+import init, { compress, analyze_file, detect_file_type } from './pkg/mmm-js.js';
 
 await init();
 
-// Detect
+// Detect format
 detect_file_type(bytes);      // → "png"
 
-// Analyze
+// Analyze metadata
 analyze_file(bytes);          // → { format, width, height, hasAlpha, ... }
 
-// Compress (defaults)
+// Compress with defaults
 await compress_with_defaults(bytes);
 
-// Compress (custom)
+// Compress with config
 await compress(bytes, JSON.stringify({
   output_format: 'webp',
   quality: 85,
@@ -40,10 +42,10 @@ await compress(bytes, JSON.stringify({
 }));
 ```
 
-### Builder
+### Config Builder
 
 ```javascript
-import { create_config } from './pkg/compression_wasm.js';
+import { create_config } from './pkg/mmm-js.js';
 
 const cfg = create_config()
   .quality(80)
@@ -52,7 +54,7 @@ const cfg = create_config()
   .build();
 ```
 
-## Functions
+## API
 
 | Function | Purpose |
 |----------|---------|
@@ -66,31 +68,36 @@ const cfg = create_config()
 
 ## Audio/Video
 
-Requires FFmpeg.wasm bridge:
+FFmpeg WASM (~22MB) is auto-downloaded on first run for A/V support.
 
 ```javascript
-globalThis.ffmpegBridge = {
-  isAvailable: async () => ffmpeg.loaded,
-  execute: async (args, data) => { /* ... */ }
+// Bridge interface (auto-configured)
+globalThis.__ffmpeg__ = {
+  isAvailable: () => boolean,
+  execute: (args, data) => Promise<{data, error}>
 };
 ```
 
 ## Build Targets
 
-| Target | Command |
-|--------|---------|
-| Browser | `wasm-pack build --target web` |
-| Bundler | `wasm-pack build --target bundler` |
-| Node | `wasm-pack build --target nodejs` |
+| Target | Command | Artifacts |
+|--------|---------|-----------|
+| Browser | `./scripts/build.sh web` | `mmm-js.js`, `mmm-js_bg.wasm` |
+| Node | `./scripts/build.sh node` | `mmm-node.js`, `mmm-node_bg.wasm` |
+| Bundler | `./scripts/build.sh bundler` | `mmm-js.js`, `mmm-js_bg.wasm` |
 
-## Benchmarks
+## Testbench
 
 ```bash
-node bench/run.mjs
+./scripts/serve.sh        # http://localhost:8080
 ```
 
-See `BENCHMARK_REPORT.md` for results.
+Auto-downloads FFmpeg WASM on first run. No manual setup required.
 
 ## License
 
 MIT
+
+---
+
+<sub>Sponsored by [notschmee](https://notschmee.com)</sub>

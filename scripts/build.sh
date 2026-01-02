@@ -9,37 +9,37 @@ cd "$PROJECT_DIR"
 TARGET="${1:-web}"
 PROFILE="${2:-release}"
 
-echo "==> Building compression-wasm for target: $TARGET ($PROFILE)"
+echo "==> Building for target: $TARGET ($PROFILE)"
 
 case "$TARGET" in
     web)
         if [[ "$PROFILE" == "release" ]]; then
-            wasm-pack build --target web --release
+            wasm-pack build --target web --release --out-name mmm-js
         else
-            wasm-pack build --target web --dev
+            wasm-pack build --target web --dev --out-name mmm-js
         fi
         ;;
     nodejs|node)
         if [[ "$PROFILE" == "release" ]]; then
-            wasm-pack build --target nodejs --release
+            wasm-pack build --target nodejs --release --out-name mmm-node
         else
-            wasm-pack build --target nodejs --dev
+            wasm-pack build --target nodejs --dev --out-name mmm-node
         fi
         ;;
     bundler)
         if [[ "$PROFILE" == "release" ]]; then
-            wasm-pack build --target bundler --release
+            wasm-pack build --target bundler --release --out-name mmm-js
         else
-            wasm-pack build --target bundler --dev
+            wasm-pack build --target bundler --dev --out-name mmm-js
         fi
         ;;
     all)
         echo "==> Building for web..."
-        wasm-pack build --target web --release --out-dir pkg/web
+        wasm-pack build --target web --release --out-name mmm-js --out-dir pkg/web
         echo "==> Building for nodejs..."
-        wasm-pack build --target nodejs --release --out-dir pkg/nodejs
+        wasm-pack build --target nodejs --release --out-name mmm-node --out-dir pkg/nodejs
         echo "==> Building for bundler..."
-        wasm-pack build --target bundler --release --out-dir pkg/bundler
+        wasm-pack build --target bundler --release --out-name mmm-js --out-dir pkg/bundler
         ;;
     *)
         echo "Usage: $0 [web|nodejs|bundler|all] [release|dev]"

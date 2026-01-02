@@ -1,12 +1,11 @@
 /**
- * Compression Testbench - Main Application
+ * Compression Testbench
  */
 
-// Paths (symlinks created by serve.sh)
-const WASM_PATH = './pkg/compression_wasm.js';
+// Try mmm-js.js first (new naming), fallback to legacy
+const WASM_PATHS = ['./pkg/mmm-js.js', './pkg/compression_wasm.js'];
 const TESTDATA_PATH = './testdata';
 
-// Testdata manifest - hardcoded file list for reliable loading
 const TESTDATA_MANIFEST = {
     images: [
         'animated.gif', 'f0304009970c4085e68d38093bbf600d62063b3e.png',
@@ -44,8 +43,26 @@ let batchAbort = false;
 // ============================================================================
 
 async function initWasm() {
+    let module = null;
+    let loadedPath = null;
+    
+    for (const path of WASM_PATHS) {
+        try {
+            module = await import(path);
+            loadedPath = path;
+            break;
+        } catch {}
+    }
+    
+    if (!module) {
+        console.error('WASM init failed: no module found');
+        document.getElementById('wasm-status').classList.remove('loading');
+        document.getElementById('wasm-status-text').textContent = 'WASM Error: module not found';
+        loadTestdata();
+        return false;
+    }
+    
     try {
-        const module = await import(WASM_PATH);
         if (typeof module.default === 'function') {
             await module.default();
         }
@@ -59,8 +76,6 @@ async function initWasm() {
 
         loadTestdata();
         updateOutputFormats();
-
-        // Load FFmpeg asynchronously (don't block UI)
         initFFmpeg();
 
         return true;
@@ -68,8 +83,6 @@ async function initWasm() {
         console.error('WASM init failed:', err);
         document.getElementById('wasm-status').classList.remove('loading');
         document.getElementById('wasm-status-text').textContent = 'WASM Error: ' + err.message;
-        
-        // Still load testdata tree even if WASM fails
         loadTestdata();
         return false;
     }
@@ -175,7 +188,6 @@ async function loadTestdataFile(path, name) {
         const selectedEl = document.querySelector(`.tree-file[data-path="${path}"]`);
         if (selectedEl) {
             selectedEl.classList.add('selected');
-            // Update size in tree
             const sizeEl = selectedEl.querySelector('.tree-file-size');
             if (sizeEl) sizeEl.textContent = formatBytes(data.length);
         }
@@ -671,12 +683,10 @@ window.toggleTreeCategory = function(categoryEl) {
 // ============================================================================
 
 function initEventListeners() {
-    // Quality slider
     document.getElementById('quality').addEventListener('input', (e) => {
         document.getElementById('quality-value').textContent = e.target.value;
     });
 
-    // Buttons
     document.getElementById('compress-btn').addEventListener('click', compress);
     document.getElementById('download-btn').addEventListener('click', downloadCompressed);
     document.getElementById('copy-stats-btn').addEventListener('click', copyStats);
@@ -684,7 +694,6 @@ function initEventListeners() {
     document.getElementById('stop-btn').addEventListener('click', stopBatch);
     document.getElementById('clear-results-btn').addEventListener('click', clearBatchResults);
 
-    // File input
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
 
@@ -725,5 +734,3 @@ function initEventListeners() {
 
 initEventListeners();
 initWasm();
-
-

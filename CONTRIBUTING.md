@@ -1,4 +1,4 @@
-# mmm — Contributing
+# Contributing
 
 ## Rules
 
@@ -16,9 +16,9 @@
 
 ## PR Checklist
 
-1. `wasm-pack build --target web --release`
+1. `./scripts/build.sh web`
 2. Zero compiler warnings
-3. `node bench/run.mjs` passes
+3. `./scripts/serve.sh` → verify in browser testbench
 4. Atomic commits
 
 ## New Format Checklist

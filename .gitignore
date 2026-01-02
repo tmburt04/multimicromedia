@@ -10,10 +10,15 @@ Cargo.lock
 # Test data
 testdata/
 
-# Benchmarks
+# FFmpeg local cache
+bench/ffmpeg/
+
+# Benchmarks (regenerated)
 BENCHMARK_REPORT.md
-bench/pkg/
-bench/testdata/
+
+# Symlinks
+bench/pkg
+bench/testdata
 
 # IDE
 .idea/

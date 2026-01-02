@@ -10,7 +10,7 @@
     <header>
         <div class="container">
             <h1>
-                Compression Testbench
+                Testbench
                 <span class="version" id="version">Loading...</span>
             </h1>
             <div class="status-bar">
@@ -311,23 +311,16 @@
 
     <script src="ffmpeg_bridge.js"></script>
     <script type="module">
-        // Load FFmpeg.wasm before the main app
-        import { FFmpeg } from 'https://esm.sh/@ffmpeg/ffmpeg@0.12.10';
-        import { toBlobURL } from 'https://esm.sh/@ffmpeg/util@0.12.1';
+        import { FFmpeg } from './ffmpeg/index.js';
 
         window.FFmpegLoader = {
             async load() {
                 try {
                     const ffmpeg = new FFmpeg();
-                    
-                    // Load from CDN
-                    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
                     await ffmpeg.load({
-                        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-                        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                        coreURL: './ffmpeg-core.js',
+                        wasmURL: './ffmpeg-core.wasm'
                     });
-                    
-                    // Initialize the bridge
                     await window.__ffmpeg__.initialize(ffmpeg);
                     console.log('[FFmpeg] Loaded successfully');
                     return true;
@@ -341,5 +334,3 @@
     <script type="module" src="index.js"></script>
 </body>
 </html>
-
-

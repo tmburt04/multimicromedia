@@ -1,4 +1,4 @@
-# mmm — Agent Instructions
+# Agent Instructions
 
 ## Architecture
 
@@ -37,9 +37,9 @@ src/
 ## Build
 
 ```bash
-wasm-pack build --target web --release    # Browser
-wasm-pack build --target nodejs --release # Node
-node bench/run.mjs                        # Benchmark
+./scripts/build.sh web      # → pkg/mmm-js.js, mmm-js_bg.wasm
+./scripts/build.sh node     # → pkg/mmm-node.js, mmm-node_bg.wasm
+./scripts/serve.sh          # Testbench UI (auto-fetches FFmpeg)
 ```
 
 ## Gotchas

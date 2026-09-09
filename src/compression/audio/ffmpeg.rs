@@ -3,41 +3,11 @@ use js_sys::{Array, Object, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-/// Tries to get the __ffmpeg__ object from the global scope.
-/// Works in both browser (window) and Node.js (global/globalThis).
+// js_sys::global resolves the host global in browsers, workers and Node.
 fn get_ffmpeg_object() -> Option<JsValue> {
-    let global = js_sys::global();
-
-    // Try globalThis.__ffmpeg__ first (works in modern browsers and Node.js)
-    if let Ok(ffmpeg) = js_sys::Reflect::get(&global, &"__ffmpeg__".into()) {
-        if !ffmpeg.is_undefined() && !ffmpeg.is_null() {
-            return Some(ffmpeg);
-        }
-    }
-
-    // Try window.__ffmpeg__ (browser fallback)
-    if let Ok(window) = js_sys::Reflect::get(&global, &"window".into()) {
-        if !window.is_undefined() && !window.is_null() {
-            if let Ok(ffmpeg) = js_sys::Reflect::get(&window, &"__ffmpeg__".into()) {
-                if !ffmpeg.is_undefined() && !ffmpeg.is_null() {
-                    return Some(ffmpeg);
-                }
-            }
-        }
-    }
-
-    // Try global.__ffmpeg__ (Node.js fallback)
-    if let Ok(node_global) = js_sys::Reflect::get(&global, &"global".into()) {
-        if !node_global.is_undefined() && !node_global.is_null() {
-            if let Ok(ffmpeg) = js_sys::Reflect::get(&node_global, &"__ffmpeg__".into()) {
-                if !ffmpeg.is_undefined() && !ffmpeg.is_null() {
-                    return Some(ffmpeg);
-                }
-            }
-        }
-    }
-
-    None
+    js_sys::Reflect::get(&js_sys::global(), &"__ffmpeg__".into())
+        .ok()
+        .filter(|value| !value.is_undefined() && !value.is_null())
 }
 
 pub fn is_ffmpeg_available() -> bool {
@@ -46,11 +16,11 @@ pub fn is_ffmpeg_available() -> bool {
         None => return false,
     };
 
-    // Check if isAvailable function exists and returns true
     if let Ok(is_available) = js_sys::Reflect::get(&ffmpeg, &"isAvailable".into()) {
         if is_available.is_function() {
-            if let Ok(result) =
-                js_sys::Reflect::apply(is_available.unchecked_ref(), &ffmpeg, &Array::new())
+            if let Ok(result) = is_available
+                .unchecked_ref::<js_sys::Function>()
+                .call0(&ffmpeg)
             {
                 return result.as_bool().unwrap_or(false);
             }
@@ -60,7 +30,44 @@ pub fn is_ffmpeg_available() -> bool {
     false
 }
 
+/// Ask an installed bridge about its output-option rules and optional codec inventory.
+/// Custom bridges without this hook keep the original execution-only contract.
+pub(crate) fn validate_ffmpeg_args(_args: &[String]) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(ffmpeg) = get_ffmpeg_object() else {
+            return Ok(());
+        };
+        let Ok(validate) = js_sys::Reflect::get(&ffmpeg, &"validateArgs".into()) else {
+            return Ok(());
+        };
+        if !validate.is_function() {
+            return Ok(());
+        }
+        let args: Array = _args.iter().map(JsValue::from).collect();
+        let value = validate
+            .unchecked_ref::<js_sys::Function>()
+            .call1(&ffmpeg, &args)
+            .map_err(|error| CompressionError::InvalidConfig {
+                field: "ffmpeg".into(),
+                reason: crate::error::js_error_message(&error),
+            })?;
+        if let Some(reason) = value.as_string() {
+            return Err(CompressionError::InvalidConfig {
+                field: "ffmpeg".into(),
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
 pub async fn execute_ffmpeg(input: &[u8], args: &[String]) -> Result<Vec<u8>> {
+    if input.is_empty() {
+        return Err(CompressionError::InvalidInput {
+            reason: "FFmpeg input must not be empty".into(),
+        });
+    }
     let ffmpeg = get_ffmpeg_object().ok_or(CompressionError::FfmpegUnavailable)?;
 
     let execute_fn = js_sys::Reflect::get(&ffmpeg, &"execute".into())
@@ -70,57 +77,59 @@ pub async fn execute_ffmpeg(input: &[u8], args: &[String]) -> Result<Vec<u8>> {
         return Err(CompressionError::FfmpegUnavailable);
     }
 
-    // Convert args to JS array
     let js_args = Array::new();
     for arg in args {
         js_args.push(&arg.into());
     }
 
-    // Convert input to Uint8Array
     let input_array = Uint8Array::from(input);
 
-    // Build call arguments
-    let call_args = Array::new();
-    call_args.push(&js_args);
-    call_args.push(&input_array);
-
-    // Execute
-    let promise = js_sys::Reflect::apply(
-        execute_fn.unchecked_ref(),
-        &ffmpeg,
-        &call_args,
-    )
-    .map_err(|e| CompressionError::FfmpegFailed {
-        detail: format!("failed to call execute: {:?}", e),
-    })?;
-
-    let result = JsFuture::from(js_sys::Promise::from(promise))
-        .await
+    let promise = execute_fn
+        .unchecked_ref::<js_sys::Function>()
+        .call2(&ffmpeg, &js_args, &input_array)
         .map_err(|e| CompressionError::FfmpegFailed {
-            detail: format!("execution failed: {:?}", e),
+            detail: format!("execute: {}", crate::error::js_error_message(&e)),
         })?;
 
-    // Check for error
+    let result = JsFuture::from(js_sys::Promise::resolve(&promise))
+        .await
+        .map_err(|e| CompressionError::FfmpegFailed {
+            detail: crate::error::js_error_message(&e),
+        })?;
+
     if let Ok(error) = js_sys::Reflect::get(&result, &"error".into()) {
         if !error.is_undefined() && !error.is_null() {
             return Err(CompressionError::FfmpegFailed {
-                detail: error.as_string().unwrap_or_else(|| "unknown error".to_string()),
+                detail: crate::error::js_error_message(&error),
             });
         }
     }
 
-    // Get output data
-    let output = js_sys::Reflect::get(&result, &"data".into())
-        .map_err(|_| CompressionError::FfmpegFailed {
+    let output = js_sys::Reflect::get(&result, &"data".into()).map_err(|_| {
+        CompressionError::FfmpegFailed {
             detail: "missing output data".to_string(),
-        })?;
+        }
+    })?;
 
-    let output_array = output.dyn_ref::<Uint8Array>()
-        .ok_or_else(|| CompressionError::FfmpegFailed {
-            detail: "invalid output format".to_string(),
-        })?;
+    let output_array =
+        output
+            .dyn_ref::<Uint8Array>()
+            .ok_or_else(|| CompressionError::FfmpegFailed {
+                detail: "invalid output format".to_string(),
+            })?;
 
-    Ok(output_array.to_vec())
+    if output_array.length() == 0 {
+        return Err(CompressionError::FfmpegFailed {
+            detail: "empty output".into(),
+        });
+    }
+    let output_len = output_array.length() as usize;
+    let mut data = Vec::new();
+    data.try_reserve_exact(output_len)
+        .map_err(|_| CompressionError::MemoryLimitExceeded)?;
+    data.resize(output_len, 0);
+    output_array.copy_to(&mut data);
+    Ok(data)
 }
 
 pub fn build_ffmpeg_input_file(data: &[u8], filename: &str) -> JsValue {

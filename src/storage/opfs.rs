@@ -1,210 +1,203 @@
 use super::{StorageHandle, StorageType};
-use crate::error::{CompressionError, Result};
-use js_sys::{Object, Uint8Array};
+use crate::error::{js_error_message, CompressionError, Result};
+use futures_channel::oneshot;
+use js_sys::{Array, Function, Object, Promise, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
-pub struct OpfsStorage;
+async fn call(receiver: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue> {
+    let arguments = Array::new();
+    for arg in args {
+        arguments.push(arg);
+    }
+    let result = js_sys::Reflect::get(receiver, &method.into())
+        .and_then(|value| value.dyn_into::<Function>())
+        .and_then(|function| function.apply(receiver, &arguments))
+        .map_err(|error| super::storage_error(&format!("OPFS {method}"), error, 0))?;
+    JsFuture::from(Promise::resolve(&result))
+        .await
+        .map_err(|error| super::storage_error(&format!("OPFS {method}"), error, 0))
+}
 
+struct PendingFile {
+    root: JsValue,
+    id: String,
+    writable: JsValue,
+    committed: bool,
+}
+
+impl PendingFile {
+    async fn create(root: JsValue, id: String) -> Result<Self> {
+        let mut pending = Self {
+            root,
+            id,
+            writable: JsValue::UNDEFINED,
+            committed: false,
+        };
+        let result = async {
+            let options = Object::new();
+            js_sys::Reflect::set(&options, &"create".into(), &true.into())
+                .map_err(|error| super::storage_error("OPFS: create options", error, 0))?;
+            let handle = call(
+                &pending.root,
+                "getFileHandle",
+                &[pending.id.clone().into(), options.into()],
+            )
+            .await?;
+            pending.writable = call(&handle, "createWritable", &[]).await?;
+            Ok::<(), CompressionError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            pending.cleanup().await;
+            return Err(error);
+        }
+        Ok(pending)
+    }
+
+    async fn cleanup(&mut self) {
+        cleanup_file(&self.root, &self.id, &self.writable).await;
+        self.committed = true;
+    }
+}
+
+async fn cleanup_file(root: &JsValue, id: &str, writable: &JsValue) {
+    if !writable.is_undefined() {
+        let _ = call(writable, "abort", &[]).await;
+    }
+    let _ = call(root, "removeEntry", &[id.into()]).await;
+}
+
+impl Drop for PendingFile {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let root = self.root.clone();
+        let id = self.id.clone();
+        let writable = self.writable.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            cleanup_file(&root, &id, &writable).await;
+        });
+    }
+}
+
+pub struct OpfsStorage;
 impl OpfsStorage {
     pub async fn store(data: &[u8]) -> Result<StorageHandle> {
-        let id = format!("compress_{}", js_sys::Date::now() as u64);
-        
-        // Get OPFS root directory
+        let id = super::new_storage_id();
         let root = Self::get_root().await?;
-        
-        // Create file
-        let options = Object::new();
-        js_sys::Reflect::set(&options, &"create".into(), &true.into())
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to set options".to_string(),
-            })?;
-        
-        let file_handle_promise = js_sys::Reflect::get(&root, &"getFileHandle".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call2(&root, &id.clone().into(), &options)
-            })
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to get file handle".to_string(),
-            })?;
-        
-        let file_handle = JsFuture::from(js_sys::Promise::from(file_handle_promise))
-            .await
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to create file".to_string(),
-            })?;
-        
-        // Create writable stream
-        let writable_promise = js_sys::Reflect::get(&file_handle, &"createWritable".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call0(&file_handle)
-            })
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to create writable".to_string(),
-            })?;
-        
-        let writable = JsFuture::from(js_sys::Promise::from(writable_promise))
-            .await
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to get writable stream".to_string(),
-            })?;
-        
-        // Write data
-        let array = Uint8Array::from(data);
-        let write_promise = js_sys::Reflect::get(&writable, &"write".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call1(&writable, &array)
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to write data".to_string(),
-            })?;
-        
-        JsFuture::from(js_sys::Promise::from(write_promise))
+        let pending_id = id.clone();
+        let (sender, receiver) = oneshot::channel();
+        // File/writer creation is not cancelable in the browser. Finish it in a
+        // detached task so cancellation can still clean up the resulting handles.
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = sender.send(PendingFile::create(root, pending_id).await);
+        });
+        let mut pending = receiver
             .await
             .map_err(|_| CompressionError::IoError {
-                detail: "write failed".to_string(),
+                detail: "OPFS: file creation canceled".into(),
+            })?
+            .map_err(|error| match error {
+                CompressionError::StorageFull { .. } => CompressionError::StorageFull {
+                    required_bytes: data.len() as u64,
+                },
+                error => error,
             })?;
-        
-        // Close stream
-        let close_promise = js_sys::Reflect::get(&writable, &"close".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call0(&writable)
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to close stream".to_string(),
-            })?;
-        
-        JsFuture::from(js_sys::Promise::from(close_promise))
-            .await
-            .map_err(|_| CompressionError::IoError {
-                detail: "close failed".to_string(),
-            })?;
-        
+        let result = async {
+            // Only one bounded JS copy is live at a time, even for large files.
+            for chunk in data.chunks(super::IO_CHUNK_SIZE) {
+                call(
+                    &pending.writable,
+                    "write",
+                    &[Uint8Array::from(chunk).into()],
+                )
+                .await?;
+            }
+            call(&pending.writable, "close", &[]).await?;
+            Ok::<(), CompressionError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            pending.cleanup().await;
+            return Err(match error {
+                CompressionError::StorageFull { .. } => CompressionError::StorageFull {
+                    required_bytes: data.len() as u64,
+                },
+                error => error,
+            });
+        }
+        pending.committed = true;
         Ok(StorageHandle {
             storage_type: StorageType::Opfs,
-            data: Vec::new(), // Data is stored externally
+            data: Vec::new(),
+            size: data.len(),
             id,
         })
     }
-    
+
     pub async fn retrieve(id: &str) -> Result<Vec<u8>> {
         let root = Self::get_root().await?;
-        
-        // Get file handle
-        let file_handle_promise = js_sys::Reflect::get(&root, &"getFileHandle".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call1(&root, &id.into())
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "file not found".to_string(),
+        let handle = call(&root, "getFileHandle", &[id.into()]).await?;
+        let file = call(&handle, "getFile", &[]).await?;
+        let size = js_sys::Reflect::get(&file, &"size".into())
+            .ok()
+            .and_then(|value| value.as_f64())
+            .filter(|size| size.is_finite() && *size >= 0.0 && size.fract() == 0.0)
+            .ok_or_else(|| CompressionError::IoError {
+                detail: "OPFS: invalid file size".into(),
             })?;
-        
-        let file_handle = JsFuture::from(js_sys::Promise::from(file_handle_promise))
-            .await
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to get file handle".to_string(),
-            })?;
-        
-        // Get file
-        let file_promise = js_sys::Reflect::get(&file_handle, &"getFile".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call0(&file_handle)
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to get file".to_string(),
-            })?;
-        
-        let file = JsFuture::from(js_sys::Promise::from(file_promise))
-            .await
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to read file".to_string(),
-            })?;
-        
-        // Read as ArrayBuffer
-        let buffer_promise = js_sys::Reflect::get(&file, &"arrayBuffer".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call0(&file)
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to read buffer".to_string(),
-            })?;
-        
-        let buffer = JsFuture::from(js_sys::Promise::from(buffer_promise))
-            .await
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to get array buffer".to_string(),
-            })?;
-        
-        let array = Uint8Array::new(&buffer);
-        Ok(array.to_vec())
+        if size >= isize::MAX as f64 {
+            return Err(CompressionError::MemoryLimitExceeded);
+        }
+        let size = size as usize;
+        let mut data = Vec::new();
+        data.try_reserve_exact(size)
+            .map_err(|_| CompressionError::MemoryLimitExceeded)?;
+        for start in (0..size).step_by(super::IO_CHUNK_SIZE) {
+            let end = start.saturating_add(super::IO_CHUNK_SIZE).min(size);
+            let slice = call(
+                &file,
+                "slice",
+                &[(start as f64).into(), (end as f64).into()],
+            )
+            .await?;
+            let buffer = call(&slice, "arrayBuffer", &[]).await?;
+            let bytes = Uint8Array::new(&buffer);
+            if bytes.length() as usize != end - start {
+                return Err(CompressionError::IoError {
+                    detail: "OPFS: incomplete file read".into(),
+                });
+            }
+            data.resize(end, 0);
+            bytes.copy_to(&mut data[start..end]);
+        }
+        Ok(data)
     }
-    
+
     pub async fn delete(id: &str) -> Result<()> {
         let root = Self::get_root().await?;
-        
-        let options = Object::new();
-        js_sys::Reflect::set(&options, &"recursive".into(), &false.into())
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to set options".to_string(),
-            })?;
-        
-        let remove_promise = js_sys::Reflect::get(&root, &"removeEntry".into())
-            .and_then(|f| {
-                let func = f.dyn_ref::<js_sys::Function>().ok_or(JsValue::NULL)?;
-                func.call2(&root, &id.into(), &options)
-            })
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to remove entry".to_string(),
-            })?;
-        
-        JsFuture::from(js_sys::Promise::from(remove_promise))
-            .await
-            .map_err(|_| CompressionError::IoError {
-                detail: "failed to delete file".to_string(),
-            })?;
-        
+        call(&root, "removeEntry", &[id.into()]).await?;
         Ok(())
     }
-    
+
     async fn get_root() -> Result<JsValue> {
-        let global = js_sys::global();
-        
-        let navigator = js_sys::Reflect::get(&global, &"navigator".into())
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "navigator not available".to_string(),
+        let navigator =
+            js_sys::Reflect::get(&js_sys::global(), &"navigator".into()).map_err(|error| {
+                CompressionError::StorageUnavailable {
+                    reason: js_error_message(&error),
+                }
             })?;
-        
-        let storage = js_sys::Reflect::get(&navigator, &"storage".into())
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "storage not available".to_string(),
-            })?;
-        
-        let get_dir = js_sys::Reflect::get(&storage, &"getDirectory".into())
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "OPFS not available".to_string(),
-            })?;
-        
-        let func = get_dir.dyn_ref::<js_sys::Function>()
-            .ok_or_else(|| CompressionError::StorageUnavailable {
-                reason: "getDirectory is not a function".to_string(),
-            })?;
-        
-        let promise = func.call0(&storage)
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to call getDirectory".to_string(),
-            })?;
-        
-        JsFuture::from(js_sys::Promise::from(promise))
-            .await
-            .map_err(|_| CompressionError::StorageUnavailable {
-                reason: "failed to get OPFS root".to_string(),
-            })
+        let storage = js_sys::Reflect::get(&navigator, &"storage".into()).map_err(|error| {
+            CompressionError::StorageUnavailable {
+                reason: js_error_message(&error),
+            }
+        })?;
+        call(&storage, "getDirectory", &[]).await.map_err(|error| {
+            CompressionError::StorageUnavailable {
+                reason: error.to_string(),
+            }
+        })
     }
 }

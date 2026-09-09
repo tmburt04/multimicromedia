@@ -1,8 +1,8 @@
 mod image;
 pub mod svg;
 
-pub use image::*;
 pub use self::svg::*;
+pub use image::*;
 
 use crate::detection::{FileAnalysis, FileFormat};
 use crate::error::Result;

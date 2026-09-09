@@ -1,11 +1,12 @@
 # Build
 target/
 pkg/
+dist/
+*.tgz
 *.wasm
 
 # Dependencies
 node_modules/
-Cargo.lock
 
 # Test data
 testdata/

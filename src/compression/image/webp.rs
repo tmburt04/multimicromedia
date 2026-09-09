@@ -1,108 +1,26 @@
-use crate::config::{CompressionConfig, OutputFormat, WebpConfig};
-use crate::error::{CompressionError, Result};
-use image::{DynamicImage, ImageReader};
-use std::io::Cursor;
+use crate::config::{CompressionConfig, OutputFormat};
+use crate::error::Result;
 
 pub async fn compress_webp(
     data: &[u8],
     config: &CompressionConfig,
     output_format: Option<OutputFormat>,
 ) -> Result<Vec<u8>> {
-    let cfg = config.get_webp_config();
-    let original_size = data.len();
-
-    // Decode WebP using image crate
-    let img = decode_webp(data)?;
-    let img = super::apply_transforms(img, config)?;
-
-    // Determine best output format
-    // Pure Rust WebP encoder only supports lossless, which often produces larger files.
-    // If lossy is preferred (lossless=false), fall back to JPEG for better compression.
-    let effective_format = match output_format {
-        Some(f) => f,
-        None => {
-            if cfg.lossless {
-                OutputFormat::Webp
-            } else {
-                // Lossy WebP not available in pure Rust WASM - use JPEG instead
-                OutputFormat::Jpeg
-            }
-        }
-    };
-
-    let output = match effective_format {
-        OutputFormat::Webp => {
-            // Only use lossless WebP encoding
-            let encoded = encode_webp(&img, &cfg)?;
-            // Return original if encoded is larger
-            if encoded.len() < original_size {
-                encoded
-            } else {
-                data.to_vec()
-            }
-        }
-        OutputFormat::Png => {
-            let png_cfg = config.get_png_config();
-            let mut out = Vec::new();
-            super::encode_png_image(&img, &png_cfg, &mut out)?;
-            out
-        }
-        OutputFormat::Jpeg => {
-            let jpeg_cfg = config.get_jpeg_config();
-            let mut out = Vec::new();
-            super::encode_jpeg_image(&img, &jpeg_cfg, &mut out)?;
-            // Return original WebP if JPEG is larger
-            if out.len() < original_size {
-                out
-            } else {
-                data.to_vec()
-            }
-        }
-        _ => {
-            return Err(CompressionError::UnsupportedFormat {
-                detected: format!("WebP to {:?}", effective_format),
-                fallback: Some("Use WebP, PNG, or JPEG output".to_string()),
-            });
-        }
-    };
-
-    Ok(output)
-}
-
-fn decode_webp(data: &[u8]) -> Result<DynamicImage> {
-    // Use image crate for decoding (pure Rust, WASM compatible)
-    ImageReader::new(Cursor::new(data))
-        .with_guessed_format()
-        .map_err(|e| CompressionError::DecodeFailed {
-            format: "WebP".to_string(),
-            detail: e.to_string(),
-        })?
-        .decode()
-        .map_err(|e| CompressionError::DecodeFailed {
-            format: "WebP".to_string(),
-            detail: e.to_string(),
-        })
-}
-
-fn encode_webp(img: &DynamicImage, _cfg: &WebpConfig) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
-    
-    // Note: The image crate only supports lossless WebP encoding in pure Rust
-    // Lossy encoding requires libwebp which has C dependencies
-    let encoder = image::codecs::webp::WebPEncoder::new_lossless(Cursor::new(&mut output));
-    img.write_with_encoder(encoder)
-        .map_err(|e| CompressionError::EncodeFailed {
-            format: "WebP".to_string(),
-            detail: e.to_string(),
-        })?;
-    
-    Ok(output)
+    if analyze_webp(data).is_animated {
+        return Ok(data.to_vec());
+    }
+    super::compress_generic(
+        data,
+        config,
+        Some(output_format.unwrap_or(OutputFormat::Webp)),
+    )
+    .await
 }
 
 pub fn analyze_webp(data: &[u8]) -> WebpInfo {
     let mut info = WebpInfo::default();
 
-    if data.len() < 30 {
+    if data.len() < 20 {
         return info;
     }
 
@@ -129,7 +47,7 @@ pub fn analyze_webp(data: &[u8]) -> WebpInfo {
             // Parse VP8 bitstream header
             if data.len() >= 30 {
                 let frame_start = 20;
-                if data.len() > frame_start + 10 {
+                if data.len() >= frame_start + 10 {
                     // Check frame tag
                     let tag = u32::from_le_bytes([
                         data[frame_start],
@@ -142,15 +60,14 @@ pub fn analyze_webp(data: &[u8]) -> WebpInfo {
                     if info.is_keyframe {
                         // Skip frame tag (3 bytes) and sync code (3 bytes)
                         let dim_offset = frame_start + 6;
-                        if data.len() > dim_offset + 4 {
+                        if data.len() >= dim_offset + 4 {
                             info.canvas_width =
                                 u16::from_le_bytes([data[dim_offset], data[dim_offset + 1]]) as u32
                                     & 0x3FFF;
-                            info.canvas_height = u16::from_le_bytes([
-                                data[dim_offset + 2],
-                                data[dim_offset + 3],
-                            ]) as u32
-                                & 0x3FFF;
+                            info.canvas_height =
+                                u16::from_le_bytes([data[dim_offset + 2], data[dim_offset + 3]])
+                                    as u32
+                                    & 0x3FFF;
                         }
                     }
                 }

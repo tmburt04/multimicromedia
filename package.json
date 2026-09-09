@@ -1,19 +1,87 @@
 {
-  "name": "mmm-bench",
-  "version": "0.1.0",
-  "private": true,
+  "name": "multimicromedia",
+  "version": "0.2.0",
+  "description": "Pure Rust WebAssembly media compression with optional FFmpeg bridges",
+  "license": "MIT",
   "type": "module",
-  "scripts": {
-    "build": "./scripts/build.sh",
-    "build:node": "./scripts/build.sh nodejs",
-    "build:web": "./scripts/build.sh web",
-    "build:all": "./scripts/build.sh all",
-    "serve": "./scripts/serve.sh"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmburt04/multimicromedia.git"
   },
-  "dependencies": {
+  "homepage": "https://github.com/tmburt04/multimicromedia#readme",
+  "bugs": {
+    "url": "https://github.com/tmburt04/multimicromedia/issues"
+  },
+  "keywords": [
+    "wasm",
+    "compression",
+    "image",
+    "png",
+    "jpeg",
+    "webp",
+    "ffmpeg",
+    "media"
+  ],
+  "main": "./dist/node/mmm-node.js",
+  "module": "./dist/web/mmm-js.js",
+  "types": "./dist/node/mmm-node.d.ts",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./dist/node/mmm-node.d.ts",
+        "default": "./dist/node/mmm-node.js"
+      },
+      "types": "./dist/web/mmm-js.d.ts",
+      "default": "./dist/web/mmm-js.js"
+    },
+    "./node": {
+      "types": "./dist/node/mmm-node.d.ts",
+      "default": "./dist/node/mmm-node.js"
+    },
+    "./web": {
+      "types": "./dist/web/mmm-js.d.ts",
+      "default": "./dist/web/mmm-js.js"
+    },
+    "./bundler": {
+      "types": "./dist/bundler/mmm-js.d.ts",
+      "default": "./dist/bundler/mmm-js.js"
+    },
+    "./ffmpeg/node": {
+      "types": "./dist/ffmpeg_node.d.mts",
+      "default": "./dist/ffmpeg_node.mjs"
+    },
+    "./ffmpeg/browser": {
+      "types": "./dist/ffmpeg_bridge.d.ts",
+      "default": "./dist/ffmpeg_bridge.js"
+    },
+    "./wasm": "./dist/web/mmm-js_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "build:node": "node ./scripts/build.mjs nodejs",
+    "build:web": "node ./scripts/build.mjs web",
+    "build:all": "node ./scripts/build.mjs all",
+    "benchmark": "node ./scripts/benchmark.mjs",
+    "serve": "bash ./scripts/serve.sh",
+    "prepack": "node ./scripts/prepare-package.mjs"
+  },
+  "devDependencies": {
     "@ffmpeg/core": "0.12.10",
     "@ffmpeg/ffmpeg": "0.12.10",
-    "ffmpeg-static": "^5.2.0",
-    "sharp": "^0.33.5"
+    "ffmpeg-static": "^5.2.0"
   }
 }

@@ -12,32 +12,44 @@ pub async fn compress(
     analysis: &FileAnalysis,
     config: &CompressionConfig,
 ) -> Result<CompressionResult> {
+    if data.is_empty() {
+        return Err(CompressionError::InvalidInput {
+            reason: "empty file".into(),
+        });
+    }
+    let validation = crate::validation::validate_config_for_input(config, analysis);
+    if !validation.valid {
+        return Err(CompressionError::InvalidConfig {
+            field: validation
+                .errors
+                .first()
+                .map(|error| error.field.clone())
+                .unwrap_or_else(|| "config".into()),
+            reason: validation
+                .errors
+                .iter()
+                .map(|error| format!("{}: {}", error.field, error.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        });
+    }
     let start = js_sys::Date::now();
     let original_size = data.len() as u64;
 
-    let output_format = config
-        .output_format
-        .or_else(|| OutputFormat::from_file_format(analysis.format));
+    let output_format = config.output_format.or_else(|| {
+        if analysis.format == FileFormat::Avif {
+            Some(OutputFormat::Webp)
+        } else {
+            OutputFormat::from_file_format(analysis.format)
+        }
+    });
 
     let compressed = match analysis.format {
         // Image formats
         FileFormat::Png => image::compress_png(data, config).await?,
         FileFormat::Jpeg => image::compress_jpeg(data, config, output_format).await?,
-        // WebP/GIF: prefer FFmpeg for better compression if available
-        FileFormat::Webp => {
-            if audio::is_ffmpeg_available() {
-                compress_webp_ffmpeg(data, analysis, config).await?
-            } else {
-                image::compress_webp(data, config, output_format).await?
-            }
-        }
-        FileFormat::Gif => {
-            if audio::is_ffmpeg_available() {
-                compress_gif_ffmpeg(data, analysis, config).await?
-            } else {
-                image::compress_gif(data, analysis, config).await?
-            }
-        }
+        FileFormat::Webp => image::compress_webp(data, config, output_format).await?,
+        FileFormat::Gif => image::compress_gif(data, analysis, config).await?,
         FileFormat::Bmp | FileFormat::Tiff | FileFormat::Ico => {
             image::compress_generic(data, config, output_format).await?
         }
@@ -75,12 +87,22 @@ pub async fn compress(
         }
     };
 
+    // Enforce the size contract for every handler, including external bridges.
+    if compressed.is_empty() {
+        return Err(CompressionError::EncodeFailed {
+            format: analysis.format.extension().into(),
+            detail: "encoder returned empty output".into(),
+        });
+    }
+    let compressed = if compressed.len() > data.len() {
+        data.to_vec()
+    } else {
+        compressed
+    };
     let time_ms = (js_sys::Date::now() - start) as u64;
     let compressed_size = compressed.len() as u64;
 
-    let format_out = output_format
-        .map(|f| f.extension())
-        .unwrap_or(analysis.format.extension());
+    let format_out = FileFormat::detect(&compressed).extension();
 
     let stats = CompressionStats::new(
         original_size,
@@ -90,104 +112,8 @@ pub async fn compress(
         format_out,
     );
 
-    Ok(CompressionResult::new(compressed, stats))
-}
-
-/// Compress GIF using FFmpeg - convert to WebP for better compression
-async fn compress_gif_ffmpeg(
-    data: &[u8],
-    analysis: &FileAnalysis,
-    config: &CompressionConfig,
-) -> Result<Vec<u8>> {
-    let quality = config.quality;
-
-    // Try converting GIF to WebP (much better compression)
-    let mut args = Vec::new();
-    args.push("-f".to_string());
-    args.push("gif".to_string());
-    args.push("-c:v".to_string());
-    args.push("libwebp".to_string());
-    args.push("-lossless".to_string());
-    args.push("0".to_string());
-    args.push("-quality".to_string());
-    args.push(quality.to_string());
-    args.push("-loop".to_string());
-    args.push("0".to_string());
-    args.push("-f".to_string());
-    args.push("webp".to_string());
-
-    if let Ok(compressed) = audio::execute_ffmpeg(data, &args).await {
-        if compressed.len() < data.len() {
-            return Ok(compressed);
-        }
-    }
-
-    // Fallback: try optimized GIF output
-    let mut args = Vec::new();
-    args.push("-f".to_string());
-    args.push("gif".to_string());
-    args.push("-f".to_string());
-    args.push("gif".to_string());
-
-    if let Ok(compressed) = audio::execute_ffmpeg(data, &args).await {
-        if compressed.len() < data.len() {
-            return Ok(compressed);
-        }
-    }
-
-    // Final fallback to Rust implementation
-    image::compress_gif(data, analysis, config).await
-}
-
-/// Compress WebP using FFmpeg for lossy compression
-async fn compress_webp_ffmpeg(
-    data: &[u8],
-    analysis: &FileAnalysis,
-    config: &CompressionConfig,
-) -> Result<Vec<u8>> {
-    let quality = config.quality;
-    let _ = analysis; // silence unused warning
-
-    // Try lossy WebP with lower quality for compression
-    let try_quality = if quality > 70 { 70 } else { quality };
-
-    let mut args = Vec::new();
-    args.push("-f".to_string());
-    args.push("webp".to_string());
-    args.push("-c:v".to_string());
-    args.push("libwebp".to_string());
-    args.push("-lossless".to_string());
-    args.push("0".to_string());
-    args.push("-quality".to_string());
-    args.push(try_quality.to_string());
-    args.push("-f".to_string());
-    args.push("webp".to_string());
-
-    if let Ok(compressed) = audio::execute_ffmpeg(data, &args).await {
-        if compressed.len() < data.len() {
-            return Ok(compressed);
-        }
-    }
-
-    // Try JPEG conversion (often smaller than WebP for photos)
-    let mut args = Vec::new();
-    args.push("-f".to_string());
-    args.push("webp".to_string());
-    args.push("-c:v".to_string());
-    args.push("mjpeg".to_string());
-    args.push("-q:v".to_string());
-    args.push("5".to_string()); // High quality JPEG
-    args.push("-f".to_string());
-    args.push("mjpeg".to_string());
-
-    if let Ok(compressed) = audio::execute_ffmpeg(data, &args).await {
-        if compressed.len() < data.len() {
-            return Ok(compressed);
-        }
-    }
-
-    // Fallback to Rust implementation
-    image::compress_webp(data, config, Some(OutputFormat::Jpeg)).await
+    let unchanged = compressed == data;
+    Ok(CompressionResult::new(compressed, stats, unchanged))
 }
 
 pub fn select_best_output(
@@ -195,28 +121,14 @@ pub fn select_best_output(
     original_size: usize,
     threshold_pct: f64,
 ) -> Vec<u8> {
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-
-    let mut best = &candidates[0];
-    for candidate in &candidates {
-        if candidate.len() < best.len() {
-            best = candidate;
-        }
-    }
-
-    // Check if improvement meets threshold
-    let improvement = if best.len() < original_size {
-        ((original_size - best.len()) as f64 / original_size as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    if improvement >= threshold_pct {
-        best.clone()
-    } else {
-        // Return empty to signal no improvement
-        Vec::new()
-    }
+    candidates
+        .into_iter()
+        .filter(|candidate| !candidate.is_empty() && candidate.len() <= original_size)
+        .min_by_key(Vec::len)
+        .filter(|best| {
+            original_size > 0
+                && (original_size - best.len()) as f64 * 100.0 / original_size as f64
+                    >= threshold_pct
+        })
+        .unwrap_or_default()
 }

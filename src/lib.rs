@@ -74,25 +74,17 @@ pub async fn compress(data: &[u8], config_json: &str) -> Result<CompressionResul
 
     let config = CompressionConfig::from_json(config_json)?;
 
-    // Analyze the file
-    let analysis = analysis::analyze_file(data)?;
-
-    // Validate configuration
-    let validation = validation::validate_config_for_input(&config, &analysis);
-    if !validation.valid {
+    // Reject invalid settings before scanning headers or an animated file's frames.
+    if let Some(error) = config.validate(None).errors.into_iter().next() {
         return Err(CompressionError::InvalidConfig {
-            field: "config".to_string(),
-            reason: validation
-                .errors
-                .iter()
-                .map(|e| format!("{}: {}", e.field, e.message))
-                .collect::<Vec<_>>()
-                .join("; "),
+            field: error.field,
+            reason: error.message,
         }
         .into());
     }
 
-    // Perform compression
+    let analysis = analysis::analyze_file(data)?;
+
     compression::compress(data, &analysis, &config)
         .await
         .map_err(|e| e.into())
@@ -192,29 +184,32 @@ pub fn get_supported_formats() -> JsValue {
 }
 
 #[wasm_bindgen]
-pub fn estimate_output_size(input_size: u64, config_json: &str) -> u64 {
+pub fn estimate_output_size(input_size: f64, config_json: &str) -> f64 {
+    if !input_size.is_finite() || input_size < 0.0 {
+        return 0.0;
+    }
     let config = match CompressionConfig::from_json(config_json) {
         Ok(c) => c,
         Err(_) => return input_size,
     };
 
-    // Rough estimation based on output format and quality
+    // Legacy heuristic; coefficients do not model current encoder behavior or availability.
     let quality = config.quality as f64 / 100.0;
     let base_ratio = match config.output_format {
-        Some(config::OutputFormat::Png) => 0.9, // PNG typically doesn't compress much more
-        Some(config::OutputFormat::Jpeg) => 0.3 + (quality * 0.5), // JPEG: 30-80%
-        Some(config::OutputFormat::Webp) => 0.2 + (quality * 0.4), // WebP: 20-60%
-        Some(config::OutputFormat::Avif) => 0.15 + (quality * 0.35), // AVIF: 15-50%
-        Some(config::OutputFormat::Gif) => 0.8, // GIF has limited compression
-        Some(config::OutputFormat::Mp3) => 0.1 + (quality * 0.15), // MP3: 10-25%
-        Some(config::OutputFormat::Aac) => 0.08 + (quality * 0.12), // AAC: 8-20%
-        Some(config::OutputFormat::Opus) => 0.05 + (quality * 0.1), // Opus: 5-15%
-        Some(config::OutputFormat::Mp4) => 0.3 + (quality * 0.4), // MP4: 30-70%
-        Some(config::OutputFormat::Webm) => 0.25 + (quality * 0.35), // WebM: 25-60%
-        _ => 0.7, // Default conservative estimate
+        Some(config::OutputFormat::Png) => 0.9,
+        Some(config::OutputFormat::Jpeg) => 0.3 + (quality * 0.5),
+        Some(config::OutputFormat::Webp) => 0.2 + (quality * 0.4),
+        Some(config::OutputFormat::Avif) => 0.15 + (quality * 0.35),
+        Some(config::OutputFormat::Gif) => 0.8,
+        Some(config::OutputFormat::Mp3) => 0.1 + (quality * 0.15),
+        Some(config::OutputFormat::Aac) => 0.08 + (quality * 0.12),
+        Some(config::OutputFormat::Opus) => 0.05 + (quality * 0.1),
+        Some(config::OutputFormat::Mp4) => 0.3 + (quality * 0.4),
+        Some(config::OutputFormat::Webm) => 0.25 + (quality * 0.35),
+        _ => 0.7,
     };
 
-    ((input_size as f64) * base_ratio) as u64
+    (input_size * base_ratio).floor().min(input_size)
 }
 
 #[wasm_bindgen]
@@ -248,21 +243,27 @@ impl CompressionConfigBuilder {
     }
 
     #[wasm_bindgen]
-    pub fn output_format(mut self, format: &str) -> Self {
-        self.config.output_format = match format.to_lowercase().as_str() {
-            "png" => Some(config::OutputFormat::Png),
-            "jpeg" | "jpg" => Some(config::OutputFormat::Jpeg),
-            "webp" => Some(config::OutputFormat::Webp),
-            "avif" => Some(config::OutputFormat::Avif),
-            "gif" => Some(config::OutputFormat::Gif),
-            "mp3" => Some(config::OutputFormat::Mp3),
-            "aac" => Some(config::OutputFormat::Aac),
-            "opus" => Some(config::OutputFormat::Opus),
-            "mp4" => Some(config::OutputFormat::Mp4),
-            "webm" => Some(config::OutputFormat::Webm),
-            _ => None,
-        };
-        self
+    pub fn output_format(mut self, format: &str) -> Result<Self, JsValue> {
+        let detected = FileFormat::from_extension(format);
+        if matches!(
+            detected,
+            FileFormat::Heic | FileFormat::Svg | FileFormat::Unknown
+        ) {
+            return Err(CompressionError::InvalidConfig {
+                field: "output_format".into(),
+                reason: format!("unsupported output format '{format}'"),
+            }
+            .into());
+        }
+        self.config.output_format = Some(
+            config::OutputFormat::from_file_format(detected).ok_or_else(|| {
+                CompressionError::InvalidConfig {
+                    field: "output_format".into(),
+                    reason: format!("unsupported format '{format}'"),
+                }
+            })?,
+        );
+        Ok(self)
     }
 
     #[wasm_bindgen]
@@ -355,7 +356,7 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
     schema.push(&quality);
 
     // Output format
-    let formats = get_output_formats(is_image, is_audio, is_video);
+    let formats = get_output_formats(format);
     let output_format = build_field(
         "output_format",
         "select",
@@ -367,8 +368,8 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
     );
     schema.push(&output_format);
 
-    // Image-specific options
-    if is_image {
+    // Raster/video transforms
+    if (is_image || is_video) && format != FileFormat::Svg {
         // Resize
         let resize_width = build_field(
             "resize.width",
@@ -402,19 +403,9 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
             &["image", "video"],
         );
         schema.push(&resize_mode);
+    }
 
-        // JPEG options
-        let jpeg_progressive = build_field(
-            "jpeg.progressive",
-            "boolean",
-            "Progressive JPEG",
-            "Enable progressive loading",
-            &serde_json::json!(false),
-            None,
-            &["image"],
-        );
-        schema.push(&jpeg_progressive);
-
+    if is_image {
         // PNG options
         let png_quantize = build_field(
             "png.quantize",
@@ -438,24 +429,12 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
         );
         schema.push(&png_compression);
 
-        // WebP options
-        let webp_lossless = build_field(
-            "webp.lossless",
-            "boolean",
-            "Lossless WebP",
-            "Use lossless compression",
-            &serde_json::json!(false),
-            None,
-            &["image"],
-        );
-        schema.push(&webp_lossless);
-
         // SVG options
         let svg_minify = build_field(
             "svg.minify",
             "boolean",
             "Minify SVG",
-            "Remove whitespace and comments",
+            "Remove comments while preserving meaningful text and whitespace",
             &serde_json::json!(true),
             None,
             &["image"],
@@ -531,7 +510,9 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
             "Encoding Speed",
             "Faster = larger file, slower = smaller file",
             &serde_json::json!("fast"),
-            Some(&serde_json::json!({"options": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]})),
+            Some(
+                &serde_json::json!({"options": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]}),
+            ),
             &["video"],
         );
         schema.push(&preset);
@@ -542,7 +523,7 @@ pub fn get_config_schema(data: Option<Vec<u8>>) -> JsValue {
         "preserve_metadata",
         "boolean",
         "Preserve Metadata",
-        "Keep EXIF and other metadata",
+        "Preserve metadata where supported by the selected encoder",
         &serde_json::json!(true),
         None,
         &["image", "audio", "video"],
@@ -578,10 +559,18 @@ fn build_field(
 
     if let Some(c) = constraints {
         if let Some(min) = c.get("min") {
-            let _ = js_sys::Reflect::set(&obj, &"min".into(), &JsValue::from(min.as_f64().unwrap_or(0.0)));
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"min".into(),
+                &JsValue::from(min.as_f64().unwrap_or(0.0)),
+            );
         }
         if let Some(max) = c.get("max") {
-            let _ = js_sys::Reflect::set(&obj, &"max".into(), &JsValue::from(max.as_f64().unwrap_or(100.0)));
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &"max".into(),
+                &JsValue::from(max.as_f64().unwrap_or(100.0)),
+            );
         }
         if let Some(options) = c.get("options") {
             let arr = js_sys::Array::new();
@@ -605,16 +594,21 @@ fn build_field(
     obj.into()
 }
 
-fn get_output_formats(is_image: bool, is_audio: bool, is_video: bool) -> Vec<&'static str> {
-    let mut formats = Vec::new();
-    if is_image {
-        formats.extend_from_slice(&["png", "jpg", "webp", "gif"]);
-    }
-    if is_audio {
-        formats.extend_from_slice(&["mp3", "aac", "ogg", "flac", "wav", "opus"]);
-    }
-    if is_video {
-        formats.extend_from_slice(&["mp4", "webm", "mov", "avi", "mkv"]);
-    }
-    formats
+fn get_output_formats(input: FileFormat) -> Vec<&'static str> {
+    MimeMapping::image_formats()
+        .into_iter()
+        .chain(MimeMapping::audio_formats())
+        .chain(MimeMapping::video_formats())
+        .filter(|format| {
+            !matches!(
+                format,
+                FileFormat::Svg | FileFormat::Avif | FileFormat::Heic
+            )
+        })
+        .filter(|format| {
+            input == FileFormat::Unknown
+                || validation::validate_format_conversion(input, *format).valid
+        })
+        .map(|format| format.extension())
+        .collect()
 }

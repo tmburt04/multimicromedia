@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub enum OutputFormat {
     // Images
     Png,
+    #[serde(alias = "jpg")]
     Jpeg,
     Webp,
     Avif,
@@ -38,114 +39,55 @@ pub enum OutputFormat {
     Mkv,
     Wmv,
     Flv,
+    #[serde(alias = "mpg")]
     Mpeg,
 }
 
 impl OutputFormat {
+    pub fn file_format(self) -> FileFormat {
+        match self {
+            Self::Png => FileFormat::Png,
+            Self::Jpeg => FileFormat::Jpeg,
+            Self::Webp => FileFormat::Webp,
+            Self::Avif => FileFormat::Avif,
+            Self::Gif => FileFormat::Gif,
+            Self::Bmp => FileFormat::Bmp,
+            Self::Tiff => FileFormat::Tiff,
+            Self::Ico => FileFormat::Ico,
+            Self::Mp3 => FileFormat::Mp3,
+            Self::Wav => FileFormat::Wav,
+            Self::Flac => FileFormat::Flac,
+            Self::Ogg => FileFormat::Ogg,
+            Self::Aac => FileFormat::Aac,
+            Self::Opus => FileFormat::Opus,
+            Self::Ac3 => FileFormat::Ac3,
+            Self::Aiff => FileFormat::Aiff,
+            Self::Amr => FileFormat::Amr,
+            Self::Wma => FileFormat::Wma,
+            Self::Mp4 => FileFormat::Mp4,
+            Self::Webm => FileFormat::Webm,
+            Self::Mov => FileFormat::Mov,
+            Self::Avi => FileFormat::Avi,
+            Self::Mkv => FileFormat::Mkv,
+            Self::Wmv => FileFormat::Wmv,
+            Self::Flv => FileFormat::Flv,
+            Self::Mpeg => FileFormat::Mpeg,
+        }
+    }
     pub fn extension(&self) -> &'static str {
-        match self {
-            OutputFormat::Png => "png",
-            OutputFormat::Jpeg => "jpg",
-            OutputFormat::Webp => "webp",
-            OutputFormat::Avif => "avif",
-            OutputFormat::Gif => "gif",
-            OutputFormat::Bmp => "bmp",
-            OutputFormat::Tiff => "tiff",
-            OutputFormat::Ico => "ico",
-            OutputFormat::Mp3 => "mp3",
-            OutputFormat::Wav => "wav",
-            OutputFormat::Flac => "flac",
-            OutputFormat::Ogg => "ogg",
-            OutputFormat::Aac => "aac",
-            OutputFormat::Opus => "opus",
-            OutputFormat::Ac3 => "ac3",
-            OutputFormat::Aiff => "aiff",
-            OutputFormat::Amr => "amr",
-            OutputFormat::Wma => "wma",
-            OutputFormat::Mp4 => "mp4",
-            OutputFormat::Webm => "webm",
-            OutputFormat::Mov => "mov",
-            OutputFormat::Avi => "avi",
-            OutputFormat::Mkv => "mkv",
-            OutputFormat::Wmv => "wmv",
-            OutputFormat::Flv => "flv",
-            OutputFormat::Mpeg => "mpg",
-        }
+        self.file_format().extension()
     }
-
     pub fn mime_type(&self) -> &'static str {
-        match self {
-            OutputFormat::Png => "image/png",
-            OutputFormat::Jpeg => "image/jpeg",
-            OutputFormat::Webp => "image/webp",
-            OutputFormat::Avif => "image/avif",
-            OutputFormat::Gif => "image/gif",
-            OutputFormat::Bmp => "image/bmp",
-            OutputFormat::Tiff => "image/tiff",
-            OutputFormat::Ico => "image/x-icon",
-            OutputFormat::Mp3 => "audio/mpeg",
-            OutputFormat::Wav => "audio/wav",
-            OutputFormat::Flac => "audio/flac",
-            OutputFormat::Ogg => "audio/ogg",
-            OutputFormat::Aac => "audio/aac",
-            OutputFormat::Opus => "audio/opus",
-            OutputFormat::Ac3 => "audio/ac3",
-            OutputFormat::Aiff => "audio/aiff",
-            OutputFormat::Amr => "audio/amr",
-            OutputFormat::Wma => "audio/x-ms-wma",
-            OutputFormat::Mp4 => "video/mp4",
-            OutputFormat::Webm => "video/webm",
-            OutputFormat::Mov => "video/quicktime",
-            OutputFormat::Avi => "video/x-msvideo",
-            OutputFormat::Mkv => "video/x-matroska",
-            OutputFormat::Wmv => "video/x-ms-wmv",
-            OutputFormat::Flv => "video/x-flv",
-            OutputFormat::Mpeg => "video/mpeg",
-        }
+        self.file_format().mime_type()
     }
-
     pub fn is_image(&self) -> bool {
-        matches!(
-            self,
-            OutputFormat::Png
-                | OutputFormat::Jpeg
-                | OutputFormat::Webp
-                | OutputFormat::Avif
-                | OutputFormat::Gif
-                | OutputFormat::Bmp
-                | OutputFormat::Tiff
-                | OutputFormat::Ico
-        )
+        self.file_format().is_image()
     }
-
     pub fn is_audio(&self) -> bool {
-        matches!(
-            self,
-            OutputFormat::Mp3
-                | OutputFormat::Wav
-                | OutputFormat::Flac
-                | OutputFormat::Ogg
-                | OutputFormat::Aac
-                | OutputFormat::Opus
-                | OutputFormat::Ac3
-                | OutputFormat::Aiff
-                | OutputFormat::Amr
-                | OutputFormat::Wma
-        )
+        self.file_format().is_audio()
     }
-
     pub fn is_video(&self) -> bool {
-        matches!(
-            self,
-            OutputFormat::Mp4
-                | OutputFormat::Webm
-                | OutputFormat::Mov
-                | OutputFormat::Avi
-                | OutputFormat::Mkv
-                | OutputFormat::Wmv
-                | OutputFormat::Flv
-                | OutputFormat::Mpeg
-        )
+        self.file_format().is_video()
     }
 
     pub fn from_file_format(format: FileFormat) -> Option<Self> {
@@ -184,6 +126,7 @@ impl OutputFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResizeConfig {
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -208,6 +151,7 @@ pub enum ResizeMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CropConfig {
     pub x: u32,
     pub y: u32,
@@ -216,6 +160,7 @@ pub struct CropConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrimConfig {
     pub start_ms: Option<u64>,
     pub end_ms: Option<u64>,
@@ -223,12 +168,14 @@ pub struct TrimConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Only `quality` is applied; the remaining fields are retained for compatibility.
+#[serde(deny_unknown_fields)]
 pub struct JpegConfig {
     #[serde(default = "default_jpeg_quality")]
     pub quality: u8,
     #[serde(default)]
     pub progressive: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub optimize_coding: bool,
     #[serde(default)]
     pub chroma_subsampling: ChromaSubsampling,
@@ -262,6 +209,9 @@ pub enum ChromaSubsampling {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Quantization/color limits apply to untransformed PNG input only.
+/// `interlaced` is retained for compatibility; output is non-interlaced.
+#[serde(deny_unknown_fields)]
 pub struct PngConfig {
     #[serde(default = "default_png_compression")]
     pub compression_level: u8,
@@ -293,6 +243,8 @@ impl Default for PngConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Compatibility settings; the current encoder always uses lossless WebP.
+#[serde(deny_unknown_fields)]
 pub struct WebpConfig {
     #[serde(default = "default_webp_quality")]
     pub quality: u8,
@@ -321,6 +273,8 @@ impl Default for WebpConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Compatibility settings; AVIF encoding is not implemented.
+#[serde(deny_unknown_fields)]
 pub struct AvifConfig {
     #[serde(default = "default_avif_quality")]
     pub quality: u8,
@@ -346,6 +300,9 @@ impl Default for AvifConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// `max_colors` affects the static quantization candidate, not every output.
+/// `lossy` and `optimize_frames` are retained but unused.
+#[serde(deny_unknown_fields)]
 pub struct GifConfig {
     #[serde(default = "default_gif_colors")]
     pub max_colors: u16,
@@ -370,6 +327,9 @@ impl Default for GifConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Comment removal requires both `minify` and `remove_comments`.
+/// `precision` is retained but unused; numeric text is preserved.
+#[serde(deny_unknown_fields)]
 pub struct SvgConfig {
     #[serde(default = "default_true")]
     pub minify: bool,
@@ -377,7 +337,7 @@ pub struct SvgConfig {
     pub compress_embedded_images: bool,
     #[serde(default = "default_svg_precision")]
     pub precision: u8,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub remove_comments: bool,
 }
 
@@ -397,6 +357,7 @@ impl Default for SvgConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FfmpegConfig {
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
@@ -409,8 +370,9 @@ pub struct FfmpegConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompressionConfig {
-    // Input hint (optional MIME type)
+    /// Compatibility field; format detection currently uses file bytes only.
     #[serde(default)]
     pub input_hint: Option<String>,
 
@@ -418,7 +380,7 @@ pub struct CompressionConfig {
     #[serde(default)]
     pub output_format: Option<OutputFormat>,
 
-    // Quality: 1-100, where 100 is best quality
+    // Quality/compression effort in 1-100; interpretation depends on the encoder.
     #[serde(default = "default_quality")]
     pub quality: u8,
 
@@ -448,6 +410,7 @@ pub struct CompressionConfig {
 
     // Processing options
     #[serde(default = "default_chunk_size")]
+    /// Utility chunk size; `compress` does not automatically chunk media.
     pub chunk_size_mb: u32,
     #[serde(default = "default_true")]
     pub preserve_metadata: bool,
@@ -458,7 +421,7 @@ fn default_quality() -> u8 {
 }
 
 fn default_chunk_size() -> u32 {
-    64
+    DEFAULT_CHUNK_SIZE_MB
 }
 
 impl Default for CompressionConfig {
@@ -477,7 +440,7 @@ impl Default for CompressionConfig {
             gif: None,
             svg: None,
             ffmpeg: None,
-            chunk_size_mb: 64,
+            chunk_size_mb: DEFAULT_CHUNK_SIZE_MB,
             preserve_metadata: true,
         }
     }
@@ -494,17 +457,40 @@ impl CompressionConfig {
     pub fn validate(&self, input_format: Option<FileFormat>) -> ValidationResult {
         let mut result = ValidationResult::ok();
 
-        // Validate quality range
+        if self.input_hint.is_some() {
+            result.add_warning("input_hint is ignored; the input format is detected from bytes");
+        }
+        if self.webp.is_some() {
+            result.add_warning(
+                "webp settings are compatibility fields; the Rust encoder is always lossless",
+            );
+        }
+        if self.avif.is_some() {
+            result.add_warning(
+                "avif settings are compatibility fields; AVIF encoding is unavailable",
+            );
+        }
+        if self.png.as_ref().is_some_and(|png| png.interlaced) {
+            result.add_warning("png.interlaced is a compatibility field and is ignored");
+        }
+        if self.jpeg.as_ref().is_some_and(|jpeg| jpeg.progressive) {
+            result.add_warning("jpeg.progressive is a compatibility field and is ignored");
+        }
+        if self.ffmpeg.as_ref().is_some_and(|ffmpeg| {
+            ffmpeg.audio_codec.as_deref() == Some("copy")
+                || ffmpeg.video_codec.as_deref() == Some("copy")
+        }) {
+            result.add_warning("stream copy requires codecs supported by the output container; preflight does not probe stream codecs");
+        }
+
         if self.quality == 0 || self.quality > 100 {
             result.add_error("quality", "must be between 1 and 100");
         }
 
-        // Validate chunk size
         if self.chunk_size_mb == 0 {
             result.add_error("chunk_size_mb", "must be greater than 0");
         }
 
-        // Validate resize config
         if let Some(ref resize) = self.resize {
             if resize.width.is_none() && resize.height.is_none() {
                 result.add_error("resize", "must specify at least width or height");
@@ -521,17 +507,21 @@ impl CompressionConfig {
             }
         }
 
-        // Validate crop config
         if let Some(ref crop) = self.crop {
             if crop.width == 0 || crop.height == 0 {
                 result.add_error("crop", "width and height must be greater than 0");
             }
         }
 
-        // Validate trim config
         if let Some(ref trim) = self.trim {
-            if let (Some(start), Some(end)) = (trim.start_ms, trim.end_ms) {
-                if start >= end {
+            if trim.duration_ms == Some(0) {
+                result.add_error("trim.duration_ms", "must be greater than 0");
+            }
+            if trim.end_ms.is_some() && trim.duration_ms.is_some() {
+                result.add_error("trim", "specify end_ms or duration_ms, not both");
+            }
+            if let Some(end) = trim.end_ms {
+                if trim.start_ms.unwrap_or(0) >= end {
                     result.add_error("trim", "start_ms must be less than end_ms");
                 }
             }
@@ -543,7 +533,6 @@ impl CompressionConfig {
             }
         }
 
-        // Validate format-specific configs
         if let Some(ref jpeg) = self.jpeg {
             if jpeg.quality == 0 || jpeg.quality > 100 {
                 result.add_error("jpeg.quality", "must be between 1 and 100");
@@ -554,8 +543,8 @@ impl CompressionConfig {
             if png.compression_level > 9 {
                 result.add_error("png.compression_level", "must be between 0 and 9");
             }
-            if png.max_colors == 0 || png.max_colors > 256 {
-                result.add_error("png.max_colors", "must be between 1 and 256");
+            if png.max_colors < 2 || png.max_colors > 256 {
+                result.add_error("png.max_colors", "must be between 2 and 256");
             }
         }
 
@@ -578,8 +567,8 @@ impl CompressionConfig {
         }
 
         if let Some(ref gif) = self.gif {
-            if gif.max_colors == 0 || gif.max_colors > 256 {
-                result.add_error("gif.max_colors", "must be between 1 and 256");
+            if gif.max_colors < 2 || gif.max_colors > 256 {
+                result.add_error("gif.max_colors", "must be between 2 and 256");
             }
         }
 
@@ -595,70 +584,46 @@ impl CompressionConfig {
                     result.add_error("ffmpeg.crf", "must be between 0 and 63");
                 }
             }
-        }
-
-        // Validate format compatibility
-        if let (Some(input), Some(output)) = (input_format, self.output_format) {
-            let input_is_image = matches!(
-                input,
-                FileFormat::Png
-                    | FileFormat::Jpeg
-                    | FileFormat::Webp
-                    | FileFormat::Avif
-                    | FileFormat::Gif
-                    | FileFormat::Bmp
-                    | FileFormat::Tiff
-                    | FileFormat::Ico
-                    | FileFormat::Svg
-                    | FileFormat::Heic
-            );
-            let input_is_audio = matches!(
-                input,
-                FileFormat::Mp3
-                    | FileFormat::Wav
-                    | FileFormat::Flac
-                    | FileFormat::Ogg
-                    | FileFormat::Aac
-                    | FileFormat::Opus
-            );
-            let input_is_video = matches!(
-                input,
-                FileFormat::Mp4
-                    | FileFormat::Webm
-                    | FileFormat::Mov
-                    | FileFormat::Avi
-                    | FileFormat::Mkv
-            );
-
-            if input_is_image && !output.is_image() {
-                result.add_error(
-                    "output_format",
-                    "cannot convert image to non-image format",
-                );
-            }
-            if input_is_audio && !output.is_audio() && !output.is_video() {
-                result.add_error(
-                    "output_format",
-                    "cannot convert audio to image format",
-                );
-            }
-            if input_is_video && !output.is_video() {
-                // Video to audio is allowed (extract audio)
-                if !output.is_audio() {
-                    result.add_error(
-                        "output_format",
-                        "video can only be converted to video or audio formats",
-                    );
+            for (field, value) in [
+                ("ffmpeg.video_codec", &ffmpeg.video_codec),
+                ("ffmpeg.audio_codec", &ffmpeg.audio_codec),
+                ("ffmpeg.video_bitrate", &ffmpeg.video_bitrate),
+                ("ffmpeg.audio_bitrate", &ffmpeg.audio_bitrate),
+                ("ffmpeg.preset", &ffmpeg.preset),
+            ] {
+                if value
+                    .as_ref()
+                    .is_some_and(|value| value.trim().is_empty() || value.contains('\0'))
+                {
+                    result.add_error(field, "must be nonempty and contain no NUL characters");
                 }
             }
+            if ffmpeg
+                .extra_flags
+                .iter()
+                .any(|flag| flag.is_empty() || flag.contains('\0'))
+            {
+                result.add_error(
+                    "ffmpeg.extra_flags",
+                    "arguments must be nonempty and contain no NUL characters",
+                );
+            }
+        }
 
-            // Trim only valid for audio/video
-            if self.trim.is_some() && input_is_image {
+        if let (Some(input), Some(output)) = (input_format, self.output_format) {
+            let conversion =
+                crate::validation::validate_format_conversion(input, output.file_format());
+            if !conversion.valid {
+                result.valid = false;
+            }
+            result.errors.extend(conversion.errors);
+            result.warnings.extend(conversion.warnings);
+        }
+        if let Some(input) = input_format {
+            if self.trim.is_some() && input.is_image() {
                 result.add_warning("trim is ignored for image formats");
             }
-
-            // Resize/crop only valid for images/video
-            if (self.resize.is_some() || self.crop.is_some()) && input_is_audio {
+            if (self.resize.is_some() || self.crop.is_some()) && input.is_audio() {
                 result.add_warning("resize/crop is ignored for audio formats");
             }
         }
@@ -667,34 +632,30 @@ impl CompressionConfig {
     }
 
     pub fn get_jpeg_config(&self) -> JpegConfig {
-        self.jpeg.clone().unwrap_or_else(|| {
-            let mut cfg = JpegConfig::default();
-            cfg.quality = self.quality;
-            cfg
+        self.jpeg.clone().unwrap_or_else(|| JpegConfig {
+            quality: self.quality,
+            ..Default::default()
         })
     }
 
     pub fn get_png_config(&self) -> PngConfig {
-        self.png.clone().unwrap_or_else(|| {
-            let mut cfg = PngConfig::default();
-            cfg.compression_level = quality_to_png_compression(self.quality);
-            cfg
+        self.png.clone().unwrap_or_else(|| PngConfig {
+            compression_level: quality_to_png_compression(self.quality),
+            ..Default::default()
         })
     }
 
     pub fn get_webp_config(&self) -> WebpConfig {
-        self.webp.clone().unwrap_or_else(|| {
-            let mut cfg = WebpConfig::default();
-            cfg.quality = self.quality;
-            cfg
+        self.webp.clone().unwrap_or_else(|| WebpConfig {
+            quality: self.quality,
+            ..Default::default()
         })
     }
 
     pub fn get_avif_config(&self) -> AvifConfig {
-        self.avif.clone().unwrap_or_else(|| {
-            let mut cfg = AvifConfig::default();
-            cfg.quality = self.quality;
-            cfg
+        self.avif.clone().unwrap_or_else(|| AvifConfig {
+            quality: self.quality,
+            ..Default::default()
         })
     }
 
@@ -712,8 +673,6 @@ impl CompressionConfig {
 }
 
 fn quality_to_png_compression(quality: u8) -> u8 {
-    // Higher quality = lower compression, but for PNG it's lossless so we invert
-    // quality 100 -> compression 9 (best compression)
-    // quality 1 -> compression 1 (fastest)
+    // Map quality to lossless compression effort: 1 -> level 1, 100 -> level 9.
     ((quality as u16 * 9) / 100).clamp(1, 9) as u8
 }

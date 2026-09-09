@@ -36,7 +36,7 @@
                         <div class="panel-toggle">▼</div>
                     </div>
                     <div class="panel-content">
-                        <div class="drop-zone" id="drop-zone">
+                        <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-label="Choose media file">
                             <div class="drop-zone-icon">📁</div>
                             <div class="drop-zone-text">
                                 Drop file here or click to browse
@@ -90,7 +90,7 @@
                                 <div class="form-group">
                                     <label>Output Format</label>
                                     <select id="output-format">
-                                        <option value="">Auto (same as input)</option>
+                                        <option value="">Auto</option>
                                     </select>
                                     <div class="form-hint">Convert to a different format</div>
                                 </div>
@@ -146,7 +146,7 @@
                                 <div class="form-group">
                                     <div class="checkbox-wrapper">
                                         <input type="checkbox" id="preserve-metadata" checked>
-                                        <label for="preserve-metadata">Preserve Metadata</label>
+                                        <label for="preserve-metadata">Preserve Metadata (best effort)</label>
                                     </div>
                                 </div>
                             </div>
@@ -309,8 +309,8 @@
         </div>
     </div>
 
-    <script src="ffmpeg_bridge.js"></script>
     <script type="module">
+        import './ffmpeg_bridge.js';
         import { FFmpeg } from './ffmpeg/index.js';
 
         window.FFmpegLoader = {
@@ -318,8 +318,8 @@
                 try {
                     const ffmpeg = new FFmpeg();
                     await ffmpeg.load({
-                        coreURL: './ffmpeg-core.js',
-                        wasmURL: './ffmpeg-core.wasm'
+                        coreURL: new URL('./ffmpeg/ffmpeg-core.js', location.href).href,
+                        wasmURL: new URL('./ffmpeg/ffmpeg-core.wasm', location.href).href
                     });
                     await window.__ffmpeg__.initialize(ffmpeg);
                     console.log('[FFmpeg] Loaded successfully');

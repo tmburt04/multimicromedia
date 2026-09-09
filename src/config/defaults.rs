@@ -1,9 +1,12 @@
 use super::{AvifConfig, GifConfig, JpegConfig, PngConfig, SvgConfig, WebpConfig};
 
+/// Budget used by image allocation guards, not a process-wide memory cap.
 pub const MAX_WASM_MEMORY_MB: u32 = 256;
 pub const DEFAULT_CHUNK_SIZE_MB: u32 = 64;
+/// Legacy advisory threshold; the main dispatcher only enforces output <= input.
 pub const COMPRESSION_THRESHOLD_PCT: f64 = 1.0;
 
+/// Suggested settings; fields unsupported by current encoders remain inactive.
 pub struct FormatDefaults;
 
 impl FormatDefaults {

@@ -39,17 +39,35 @@ impl CompressionStats {
 pub struct CompressionResult {
     data: Vec<u8>,
     stats: CompressionStats,
+    unchanged: bool,
 }
 
 #[wasm_bindgen]
 impl CompressionResult {
-    pub(crate) fn new(data: Vec<u8>, stats: CompressionStats) -> Self {
-        Self { data, stats }
+    pub(crate) fn new(data: Vec<u8>, stats: CompressionStats, unchanged: bool) -> Self {
+        Self {
+            data,
+            stats,
+            unchanged,
+        }
+    }
+
+    /// Whether the returned bytes are identical to the input, including size fallbacks.
+    #[wasm_bindgen(getter)]
+    pub fn unchanged(&self) -> bool {
+        self.unchanged
     }
 
     #[wasm_bindgen(getter)]
     pub fn data(&self) -> Vec<u8> {
         self.data.clone()
+    }
+
+    /// Consume the result and transfer its buffer without a second Rust allocation.
+    /// Read statistics first; this releases the result just like `free()`.
+    #[wasm_bindgen]
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
     }
 
     #[wasm_bindgen(getter)]

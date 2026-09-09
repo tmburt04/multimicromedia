@@ -9,7 +9,7 @@ pub fn get_recommended_codec(format: FileFormat, quality: u8) -> VideoCodecRecom
                     audio_codec: "aac".to_string(),
                     container: "mp4".to_string(),
                     preset: "slow".to_string(),
-                    notes: "H.265/HEVC for maximum compression at high quality".to_string(),
+                    notes: "H.265/HEVC option for high-quality encoding".to_string(),
                 }
             } else {
                 VideoCodecRecommendation {
@@ -28,7 +28,8 @@ pub fn get_recommended_codec(format: FileFormat, quality: u8) -> VideoCodecRecom
                     audio_codec: "libopus".to_string(),
                     container: "webm".to_string(),
                     preset: "medium".to_string(),
-                    notes: "AV1 for best compression (slow encoding)".to_string(),
+                    notes: "AV1 option; encoder availability and speed depend on the FFmpeg build"
+                        .to_string(),
                 }
             } else {
                 VideoCodecRecommendation {
@@ -87,15 +88,15 @@ pub fn estimate_video_output_size(
     original_crf: Option<u8>,
 ) -> u64 {
     // Rough estimation based on CRF change
-    // Every 6 CRF units roughly doubles/halves the bitrate
+    // Model a factor of two per six CRF units; this is not a size guarantee.
     let crf_diff = if let Some(orig) = original_crf {
         target_crf as i32 - orig as i32
     } else {
-        // Assume original CRF of ~23 (typical for web video)
+        // Use 23 when the original CRF is unknown.
         target_crf as i32 - 23
     };
 
-    let ratio = 2.0_f64.powf(crf_diff as f64 / 6.0);
+    let ratio = 2.0_f64.powf(-(crf_diff as f64) / 6.0);
     ((input_size as f64) * ratio) as u64
 }
 
@@ -113,7 +114,7 @@ pub fn get_video_filter_chain(
 
     // Scale
     if let Some((w, h)) = resize {
-        // Use -2 to ensure even dimensions (required by most codecs)
+        // A zero dimension requests an inferred, even dimension via -2.
         let scale = if w == 0 && h > 0 {
             format!("scale=-2:{}", h)
         } else if h == 0 && w > 0 {

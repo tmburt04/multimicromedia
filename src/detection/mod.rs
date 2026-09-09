@@ -44,7 +44,7 @@ pub enum FileFormat {
 
 impl FileFormat {
     pub fn detect(data: &[u8]) -> Self {
-        if data.len() < 12 {
+        if data.len() < 2 {
             return Self::Unknown;
         }
 
@@ -85,36 +85,12 @@ impl FileFormat {
             return Self::Ico;
         }
 
-        // AVIF: ftyp box with avif/avis/mif1 brand
-        if data.len() >= 12 && &data[4..8] == b"ftyp" {
-            let brand = &data[8..12];
-            if brand == b"avif" || brand == b"avis" || brand == b"mif1" {
-                return Self::Avif;
-            }
-            // HEIC: ftyp heic/heix/mif1
-            if brand == b"heic" || brand == b"heix" {
-                return Self::Heic;
-            }
-            // MP4/MOV detection
-            if brand == b"isom"
-                || brand == b"mp41"
-                || brand == b"mp42"
-                || brand == b"M4V "
-                || brand == b"M4A "
-                || brand == b"mp71"
-                || brand == b"avc1"
-                || brand == b"iso2"
-                || brand == b"iso5"
-                || brand == b"iso6"
-            {
-                return Self::Mp4;
-            }
-            if brand == b"qt  " {
-                return Self::Mov;
-            }
+        // Check both the major and compatible brands; mif1 alone is not AVIF.
+        if let Some(format) = detect_isobmff(data) {
+            return format;
         }
 
-        // SVG: text-based, check for <?xml or <svg
+        // SVG root following an optional XML prolog
         if is_likely_svg(data) {
             return Self::Svg;
         }
@@ -122,9 +98,7 @@ impl FileFormat {
         // AAC: ADTS sync word or ADIF
         // Must check BEFORE MP3 since ADTS 0xFFF matches less-strict MP3 pattern
         // ADTS: 0xFF 0xF0-0xF9 (sync word 0xFFF, layer=0)
-        if data.starts_with(b"ADIF")
-            || (data[0] == 0xFF && (data[1] & 0xF6) == 0xF0)
-        {
+        if data.starts_with(b"ADIF") || (data[0] == 0xFF && (data[1] & 0xF6) == 0xF0) {
             return Self::Aac;
         }
 
@@ -149,8 +123,13 @@ impl FileFormat {
         // OGG: OggS
         if data.starts_with(b"OggS") {
             // Could be Vorbis or Opus - check further
-            if data.len() >= 35 {
-                if &data[28..35] == b"OpusHea" {
+            if let Some(&segments) = data.get(26) {
+                let packet_start = 27 + usize::from(segments);
+                if segments > 0
+                    && data.get(5).is_some_and(|flags| flags & 1 == 0)
+                    && data.get(27).is_some_and(|length| *length >= 8)
+                    && data.get(packet_start..packet_start + 8) == Some(b"OpusHead")
+                {
                     return Self::Opus;
                 }
             }
@@ -159,16 +138,8 @@ impl FileFormat {
 
         // WebM: EBML header with webm doctype
         if data.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
-            // Check for webm doctype in the header
-            if data.len() >= 31 {
-                for i in 0..(data.len().saturating_sub(4)) {
-                    if &data[i..i + 4] == b"webm" {
-                        return Self::Webm;
-                    }
-                    if &data[i..i + 8] == b"matroska" {
-                        return Self::Mkv;
-                    }
-                }
+            if ebml_doctype(data) == Some(b"webm") {
+                return Self::Webm;
             }
             // Default to MKV for EBML without webm doctype
             return Self::Mkv;
@@ -179,8 +150,11 @@ impl FileFormat {
             return Self::Avi;
         }
 
-        // AIFF: FORM....AIFF
-        if data.starts_with(b"FORM") && data.len() >= 12 && &data[8..12] == b"AIFF" {
+        // AIFF/AIFC: FORM container
+        if data.starts_with(b"FORM")
+            && data.len() >= 12
+            && matches!(&data[8..12], b"AIFF" | b"AIFC")
+        {
             return Self::Aiff;
         }
 
@@ -201,32 +175,7 @@ impl FileFormat {
                 0xCE, 0x6C,
             ])
         {
-            // ASF container - could be WMV or WMA
-            // Check for video stream GUID to distinguish
-            // For simplicity, check file size and extension hint
-            // Default to WMV for video, but we'll check content type GUIDs
-            for i in 0..(data.len().saturating_sub(16)) {
-                // Video Media GUID
-                if &data[i..i + 16]
-                    == &[
-                        0xC0, 0xEF, 0x19, 0xBC, 0x4D, 0x5B, 0xCF, 0x11, 0xA8, 0xFD, 0x00, 0x80,
-                        0x5F, 0x5C, 0x44, 0x2B,
-                    ]
-                {
-                    return Self::Wmv;
-                }
-                // Audio Media GUID
-                if &data[i..i + 16]
-                    == &[
-                        0x40, 0x9E, 0x69, 0xF8, 0x4D, 0x5B, 0xCF, 0x11, 0xA8, 0xFD, 0x00, 0x80,
-                        0x5F, 0x5C, 0x44, 0x2B,
-                    ]
-                {
-                    return Self::Wma;
-                }
-            }
-            // Default to WMV if we can't determine
-            return Self::Wmv;
+            return detect_asf(data);
         }
 
         // FLV: FLV + version
@@ -235,19 +184,20 @@ impl FileFormat {
         }
 
         // MPEG-1/2: Pack start code 0x000001BA or video start code 0x000001B3
-        if data.len() >= 4 {
-            if (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0xBA)
-                || (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0xB3)
-            {
-                return Self::Mpeg;
-            }
+        if data.starts_with(&[0, 0, 1, 0xBA]) || data.starts_with(&[0, 0, 1, 0xB3]) {
+            return Self::Mpeg;
         }
 
         Self::Unknown
     }
 
     pub fn from_extension(ext: &str) -> Self {
-        match ext.to_lowercase().as_str() {
+        match ext
+            .trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "png" => Self::Png,
             "jpg" | "jpeg" | "jpe" | "jfif" => Self::Jpeg,
             "webp" => Self::Webp,
@@ -281,7 +231,14 @@ impl FileFormat {
     }
 
     pub fn from_mime(mime: &str) -> Self {
-        match mime.to_lowercase().as_str() {
+        match mime
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "image/png" => Self::Png,
             "image/jpeg" | "image/jpg" => Self::Jpeg,
             "image/webp" => Self::Webp,
@@ -429,42 +386,220 @@ impl FileFormat {
     }
 
     pub fn requires_ffmpeg(&self) -> bool {
-        self.is_audio() || self.is_video() || *self == Self::Gif
+        self.is_audio() || self.is_video() || matches!(self, Self::Avif | Self::Heic)
     }
 
+    /// Legacy format-level hint; inspect FileAnalysis for detected animation.
     pub fn is_animated(&self) -> bool {
         matches!(self, Self::Gif | Self::Webp | Self::Avif)
     }
 }
 
+/// Iterate only the declared FileTypeBox, excluding the minor-version field.
+pub(crate) fn isobmff_brands(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let payload = (|| {
+        if data.get(4..8)? != b"ftyp" {
+            return None;
+        }
+        let size = u32::from_be_bytes(data.get(..4)?.try_into().ok()?);
+        let (header, end) = match size {
+            0 => (8, data.len()),
+            1 => (
+                16,
+                usize::try_from(u64::from_be_bytes(data.get(8..16)?.try_into().ok()?)).ok()?,
+            ),
+            size => (8, size as usize),
+        };
+        if end < header + 8 || end > data.len() {
+            return None;
+        }
+        data.get(header..end)
+    })()
+    .unwrap_or_default();
+    payload
+        .get(..4)
+        .into_iter()
+        .chain(payload.get(8..).unwrap_or_default().chunks_exact(4))
+}
+
+fn detect_isobmff(data: &[u8]) -> Option<FileFormat> {
+    let mut fallback = None;
+    for brand in isobmff_brands(data) {
+        match brand {
+            b"avif" | b"avis" => return Some(FileFormat::Avif),
+            b"heic" | b"heix" | b"hevc" | b"hevx" => fallback = Some(FileFormat::Heic),
+            b"mif1" | b"msf1" => {
+                fallback.get_or_insert(FileFormat::Heic);
+            }
+            b"qt  " if fallback.is_none() || fallback == Some(FileFormat::Mp4) => {
+                fallback = Some(FileFormat::Mov);
+            }
+            b"M4A " | b"M4B " if fallback.is_none() || fallback == Some(FileFormat::Mp4) => {
+                fallback = Some(FileFormat::Aac);
+            }
+            b"isom" | b"mp41" | b"mp42" | b"M4V " | b"mp71" | b"avc1" | b"iso2" | b"iso3"
+            | b"iso4" | b"iso5" | b"iso6" | b"iso7" | b"iso8" | b"iso9" => {
+                fallback.get_or_insert(FileFormat::Mp4);
+            }
+            _ => {}
+        }
+    }
+    fallback
+}
+
+fn ebml_integer(data: &[u8], keep_marker: bool) -> Option<(u64, usize)> {
+    let first = *data.first()?;
+    if first == 0 {
+        return None;
+    }
+    let length = first.leading_zeros() as usize + 1;
+    let bytes = data.get(..length)?;
+    let mut value = u64::from(if keep_marker {
+        first
+    } else {
+        first & (0xffu16 >> length) as u8
+    });
+    for byte in &bytes[1..] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Some((value, length))
+}
+
+fn ebml_doctype(data: &[u8]) -> Option<&[u8]> {
+    let (size, length) = ebml_integer(data.get(4..)?, false)?;
+    let start = 4 + length;
+    let end = start.checked_add(usize::try_from(size).ok()?)?;
+    let mut header = data.get(start..end)?;
+    while !header.is_empty() {
+        let (id, id_length) = ebml_integer(header, true)?;
+        let (size, size_length) = ebml_integer(header.get(id_length..)?, false)?;
+        let offset = id_length + size_length;
+        let end = offset.checked_add(usize::try_from(size).ok()?)?;
+        let value = header.get(offset..end)?;
+        if id == 0x4282 {
+            return Some(value);
+        }
+        header = header.get(end..)?;
+    }
+    None
+}
+
+fn detect_asf(data: &[u8]) -> FileFormat {
+    // ASF objects have a 16-byte GUID and 8-byte length. Skip their payloads.
+    let Some(header_size) = data
+        .get(16..24)
+        .and_then(|v| v.try_into().ok())
+        .map(u64::from_le_bytes)
+    else {
+        return FileFormat::Wmv;
+    };
+    let limit = usize::try_from(header_size)
+        .unwrap_or(data.len())
+        .min(data.len());
+    let mut offset = 30usize;
+    let mut audio = false;
+    while offset <= limit.saturating_sub(24) {
+        let object = &data[offset..limit];
+        let length = u64::from_le_bytes(object[16..24].try_into().unwrap());
+        let Ok(length) = usize::try_from(length) else {
+            break;
+        };
+        if length < 24 || length > object.len() {
+            break;
+        }
+        // Stream Properties Object GUID, then its Stream Type GUID.
+        if object[..16]
+            == [
+                0x91, 0x07, 0xdc, 0xb7, 0xb7, 0xa9, 0xcf, 0x11, 0x8e, 0xe6, 0, 0xc0, 0x0c, 0x20,
+                0x53, 0x65,
+            ]
+            && length >= 40
+        {
+            match &object[24..40] {
+                [0xc0, 0xef, 0x19, 0xbc, 0x4d, 0x5b, 0xcf, 0x11, 0xa8, 0xfd, 0, 0x80, 0x5f, 0x5c, 0x44, 0x2b] => {
+                    return FileFormat::Wmv
+                }
+                [0x40, 0x9e, 0x69, 0xf8, 0x4d, 0x5b, 0xcf, 0x11, 0xa8, 0xfd, 0, 0x80, 0x5f, 0x5c, 0x44, 0x2b] => {
+                    audio = true
+                }
+                _ => {}
+            }
+        }
+        offset += length;
+    }
+    if audio {
+        FileFormat::Wma
+    } else {
+        FileFormat::Wmv
+    }
+}
+
 fn is_likely_svg(data: &[u8]) -> bool {
-    // Check for BOM or whitespace at start
-    let trimmed = trim_leading_whitespace(data);
-    if trimmed.len() < 4 {
-        return false;
+    // Sniff only the XML prolog/root name, without allocating a DOM for MIME detection.
+    let mut remaining = data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data);
+    loop {
+        remaining = trim_leading_whitespace(remaining);
+        let (prefix, terminator): (&[u8], &[u8]) = if remaining.starts_with(b"<?") {
+            (b"<?", b"?>")
+        } else if remaining.starts_with(b"<!--") {
+            (b"<!--", b"-->")
+        } else if remaining.starts_with(b"<!DOCTYPE") {
+            let mut quote = None;
+            let mut depth = 0u32;
+            let mut end = None;
+            for (i, &byte) in remaining.iter().enumerate().skip(9) {
+                if let Some(delimiter) = quote {
+                    if byte == delimiter {
+                        quote = None;
+                    }
+                } else {
+                    match byte {
+                        b'\'' | b'"' => quote = Some(byte),
+                        b'[' => depth = depth.saturating_add(1),
+                        b']' => depth = depth.saturating_sub(1),
+                        b'>' if depth == 0 => {
+                            end = Some(i + 1);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let Some(end) = end else {
+                return false;
+            };
+            remaining = &remaining[end..];
+            continue;
+        } else {
+            let Some(name) = remaining.strip_prefix(b"<") else {
+                return false;
+            };
+            let Some(end) = name
+                .iter()
+                .position(|b| b.is_ascii_whitespace() || matches!(b, b'>' | b'/'))
+            else {
+                return false;
+            };
+            return name[..end].rsplit(|b| *b == b':').next() == Some(b"svg");
+        };
+        let Some(end) = remaining[prefix.len()..]
+            .windows(terminator.len())
+            .position(|w| w == terminator)
+        else {
+            return false;
+        };
+        remaining = &remaining[prefix.len() + end + terminator.len()..];
     }
-
-    // Check for <?xml or <svg or <!DOCTYPE svg
-    if trimmed.starts_with(b"<?xml")
-        || trimmed.starts_with(b"<svg")
-        || trimmed.starts_with(b"<!DOCTYPE svg")
-        || trimmed.starts_with(b"<!doctype svg")
-    {
-        return true;
-    }
-
-    // Check for UTF-8 BOM followed by SVG content
-    if trimmed.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let after_bom = &trimmed[3..];
-        return is_likely_svg(after_bom);
-    }
-
-    false
 }
 
 fn trim_leading_whitespace(data: &[u8]) -> &[u8] {
     let mut start = 0;
-    while start < data.len() && (data[start] == b' ' || data[start] == b'\t' || data[start] == b'\n' || data[start] == b'\r') {
+    while start < data.len()
+        && (data[start] == b' '
+            || data[start] == b'\t'
+            || data[start] == b'\n'
+            || data[start] == b'\r')
+    {
         start += 1;
     }
     &data[start..]

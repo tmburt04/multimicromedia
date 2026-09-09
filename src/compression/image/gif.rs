@@ -2,14 +2,20 @@ use crate::config::CompressionConfig;
 use crate::detection::FileAnalysis;
 use crate::error::{CompressionError, Result};
 use image::codecs::gif::GifDecoder;
-use image::{AnimationDecoder, DynamicImage, Frame, ImageReader, RgbaImage};
-use std::io::Cursor;
+use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, RgbaImage};
+use std::io::{self, Cursor, Write};
 
 pub async fn compress_gif(
     data: &[u8],
     analysis: &FileAnalysis,
     config: &CompressionConfig,
 ) -> Result<Vec<u8>> {
+    if config
+        .output_format
+        .is_some_and(|format| format != crate::config::OutputFormat::Gif)
+    {
+        return super::compress_generic(data, config, config.output_format).await;
+    }
     let is_animated = analysis.is_animated.unwrap_or(false);
     let frame_count = analysis.frame_count.unwrap_or(1);
 
@@ -24,304 +30,201 @@ fn compress_static_gif(data: &[u8], config: &CompressionConfig) -> Result<Vec<u8
     let original_size = data.len();
     let gif_cfg = config.get_gif_config();
 
-    // Decode GIF
-    let img = ImageReader::new(Cursor::new(data))
-        .with_guessed_format()
-        .map_err(|e| CompressionError::DecodeFailed {
-            format: "GIF".to_string(),
-            detail: e.to_string(),
-        })?
-        .decode()
-        .map_err(|e| CompressionError::DecodeFailed {
-            format: "GIF".to_string(),
-            detail: e.to_string(),
-        })?;
-
-    // Apply transforms
-    let img = super::apply_transforms(img, config)?;
-
-    // Try quantized encoding for better compression
-    let mut candidates = Vec::new();
-
-    // Strategy 1: Direct re-encode
+    let img = super::apply_transforms(super::decode_image(data)?, config)?;
+    let mut best = None;
     let mut direct_output = Vec::new();
-    if img
-        .write_to(&mut Cursor::new(&mut direct_output), image::ImageFormat::Gif)
-        .is_ok()
-    {
-        candidates.push(direct_output);
+    let direct_result = img.write_to(
+        &mut Cursor::new(&mut direct_output),
+        image::ImageFormat::Gif,
+    );
+    if direct_result.is_ok() && !direct_output.is_empty() && direct_output.len() < original_size {
+        best = Some(direct_output);
+    } else {
+        drop(direct_output);
     }
 
-    // Strategy 2: Quantized with reduced colors
-    if let Ok(quantized) = quantize_gif_frame(&img.to_rgba8(), gif_cfg.max_colors) {
-        candidates.push(quantized);
+    // Reuse the decoded RGBA allocation when available and retain just one candidate.
+    let rgba = img.into_rgba8();
+    match quantize_gif_frame(&rgba, gif_cfg.max_colors) {
+        Ok(output)
+            if output.len() < original_size
+                && best
+                    .as_ref()
+                    .is_none_or(|current: &Vec<u8>| output.len() < current.len()) =>
+        {
+            best = Some(output);
+        }
+        Err(error) if direct_result.is_err() => return Err(error),
+        _ => {}
     }
-
-    // Pick smallest result
-    let best = candidates
-        .into_iter()
-        .filter(|c| !c.is_empty())
-        .min_by_key(|c| c.len());
-
-    match best {
-        Some(output) if output.len() < original_size => Ok(output),
-        _ => Ok(data.to_vec()),
-    }
+    Ok(best.unwrap_or_else(|| data.to_vec()))
 }
 
 fn quantize_gif_frame(rgba: &RgbaImage, max_colors: u16) -> Result<Vec<u8>> {
     let width = rgba.width() as usize;
     let height = rgba.height() as usize;
+    if width > u16::MAX as usize || height > u16::MAX as usize {
+        return Err(CompressionError::EncodeFailed {
+            format: "GIF".into(),
+            detail: "dimensions exceed the GIF limit of 65535 pixels".into(),
+        });
+    }
 
-    let mut liq = imagequant::new();
-    liq.set_speed(5).map_err(|e| CompressionError::EncodeFailed {
-        format: "GIF".to_string(),
-        detail: format!("quantization error: {:?}", e),
-    })?;
-    liq.set_max_colors(max_colors as u32)
-        .map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: format!("max colors error: {:?}", e),
-        })?;
-
-    let rgba_pixels: Vec<imagequant::RGBA> = rgba
+    let indexed = super::quantize::quantize_rgba(rgba.as_raw(), max_colors, 5)?;
+    let palette = indexed.palette;
+    let mut pixels = indexed.indices;
+    let transparent = rgba
         .as_raw()
         .chunks_exact(4)
-        .map(|c| imagequant::RGBA {
-            r: c[0],
-            g: c[1],
-            b: c[2],
-            a: c[3],
-        })
-        .collect();
+        .any(|pixel| pixel[3] < 128)
+        .then(|| {
+            palette
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, color)| color[3])
+                .unwrap()
+                .0
+        });
+    if let Some(transparent) = transparent {
+        for (index, pixel) in pixels.iter_mut().zip(rgba.as_raw().chunks_exact(4)) {
+            if pixel[3] < 128 {
+                *index = transparent as u8;
+            } else if *index as usize == transparent {
+                // GIF has only one transparent index; opaque pixels must use another entry.
+                *index = palette
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != transparent)
+                    .min_by_key(|(_, color)| {
+                        (0..3)
+                            .map(|c| (i32::from(color[c]) - i32::from(pixel[c])).pow(2))
+                            .sum::<i32>()
+                    })
+                    .map(|(i, _)| i as u8)
+                    .unwrap_or(*index);
+            }
+        }
+    }
 
-    let mut img_data = liq
-        .new_image(rgba_pixels, width, height, 0.0)
-        .map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: format!("image creation error: {:?}", e),
-        })?;
-
-    let mut res = liq
-        .quantize(&mut img_data)
-        .map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: format!("quantization error: {:?}", e),
-        })?;
-
-    let (palette, pixels) = res.remapped(&mut img_data).map_err(|e| CompressionError::EncodeFailed {
-        format: "GIF".to_string(),
-        detail: format!("remap error: {:?}", e),
-    })?;
-
-    // Build GIF manually with optimized palette
     let mut output = Vec::new();
     {
-        use gif::{Encoder, Frame as GifFrame, Repeat};
+        use gif::{Encoder, Frame as GifFrame};
 
-        let mut encoder = Encoder::new(&mut output, width as u16, height as u16, &[])
+        let mut encoder =
+            Encoder::new(&mut output, width as u16, height as u16, &[]).map_err(|e| {
+                CompressionError::EncodeFailed {
+                    format: "GIF".to_string(),
+                    detail: e.to_string(),
+                }
+            })?;
+
+        let gif_palette: Vec<u8> = palette.iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
+
+        let mut frame = GifFrame {
+            width: width as u16,
+            height: height as u16,
+            palette: Some(gif_palette),
+            buffer: std::borrow::Cow::Owned(pixels),
+            ..Default::default()
+        };
+
+        frame.transparent = transparent.map(|index| index as u8);
+
+        encoder
+            .write_frame(&frame)
             .map_err(|e| CompressionError::EncodeFailed {
                 format: "GIF".to_string(),
                 detail: e.to_string(),
             })?;
-
-        encoder.set_repeat(Repeat::Infinite).map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: e.to_string(),
-        })?;
-
-        // Build palette (RGB triplets)
-        let gif_palette: Vec<u8> = palette.iter().flat_map(|c| [c.r, c.g, c.b]).collect();
-
-        let mut frame = GifFrame::default();
-        frame.width = width as u16;
-        frame.height = height as u16;
-        frame.palette = Some(gif_palette);
-        frame.buffer = std::borrow::Cow::Owned(pixels);
-
-        // Handle transparency
-        if let Some(transparent_idx) = palette.iter().position(|c| c.a < 128) {
-            frame.transparent = Some(transparent_idx as u8);
-        }
-
-        encoder.write_frame(&frame).map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: e.to_string(),
-        })?;
     }
 
     Ok(output)
 }
 
 fn compress_animated_gif(data: &[u8], config: &CompressionConfig) -> Result<Vec<u8>> {
-    let original_size = data.len();
-    let gif_cfg = config.get_gif_config();
-
-    // Decode all frames
-    let decoder = GifDecoder::new(Cursor::new(data)).map_err(|e| CompressionError::DecodeFailed {
-        format: "GIF".to_string(),
+    let decode_error = |e: image::ImageError| CompressionError::DecodeFailed {
+        format: "GIF".into(),
         detail: e.to_string(),
-    })?;
-
-    let frames: Vec<Frame> = decoder
-        .into_frames()
-        .collect_frames()
+    };
+    let encode_error = |e: image::ImageError| CompressionError::EncodeFailed {
+        format: "GIF".into(),
+        detail: e.to_string(),
+    };
+    // Read the loop extension separately; the image decoder supplies composited frames.
+    let header = gif::DecodeOptions::new()
+        .read_info(Cursor::new(data))
         .map_err(|e| CompressionError::DecodeFailed {
-            format: "GIF".to_string(),
+            format: "GIF".into(),
             detail: e.to_string(),
         })?;
-
-    if frames.is_empty() {
+    let repeat = match header.repeat() {
+        gif::Repeat::Infinite => image::codecs::gif::Repeat::Infinite,
+        gif::Repeat::Finite(n) => image::codecs::gif::Repeat::Finite(n),
+    };
+    drop(header);
+    let mut decoder = GifDecoder::new(Cursor::new(data)).map_err(decode_error)?;
+    decoder
+        .set_limits(super::decode_limits())
+        .map_err(decode_error)?;
+    let mut output = AnimationOutput {
+        bytes: Vec::new(),
+        limit: data.len().min((super::memory_budget() / 4) as usize),
+        exceeded: false,
+    };
+    let encoded = (|| -> Result<()> {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut output);
+        encoder.set_repeat(repeat).map_err(encode_error)?;
+        // Stream frames instead of retaining the entire decoded animation in WASM memory.
+        for frame in decoder.into_frames() {
+            let frame = frame.map_err(decode_error)?;
+            let delay = frame.delay();
+            let img =
+                super::apply_transforms(DynamicImage::ImageRgba8(frame.into_buffer()), config)?;
+            encoder
+                .encode_frame(Frame::from_parts(img.into_rgba8(), 0, 0, delay))
+                .map_err(encode_error)?;
+        }
+        Ok(())
+    })();
+    if output.exceeded {
         return Ok(data.to_vec());
     }
-
-    // Use optimized encoding with quantization
-    let mut output = Vec::new();
-    {
-        use gif::{Encoder, Frame as GifFrame, Repeat};
-
-        let first_frame = &frames[0];
-        let width = first_frame.buffer().width() as u16;
-        let height = first_frame.buffer().height() as u16;
-
-        let mut encoder = Encoder::new(&mut output, width, height, &[])
-            .map_err(|e| CompressionError::EncodeFailed {
-                format: "GIF".to_string(),
-                detail: e.to_string(),
-            })?;
-
-        encoder.set_repeat(Repeat::Infinite).map_err(|e| CompressionError::EncodeFailed {
-            format: "GIF".to_string(),
-            detail: e.to_string(),
-        })?;
-
-        // Process each frame with quantization
-        for frame in &frames {
-            let (numerator, denominator) = frame.delay().numer_denom_ms();
-            let delay_ms = (numerator as f32 / denominator as f32) as u16;
-            let delay_cs = delay_ms / 10; // Convert to centiseconds
-
-            let rgba = frame.buffer();
-
-            // Apply transforms if needed
-            let rgba = if config.resize.is_some() || config.crop.is_some() {
-                let img = DynamicImage::ImageRgba8(rgba.clone());
-                let transformed = super::apply_transforms(img, config)?;
-                transformed.into_rgba8()
-            } else {
-                rgba.clone()
-            };
-
-            // Quantize frame
-            if let Some((palette, pixels)) = quantize_frame_data(&rgba, gif_cfg.max_colors) {
-                let gif_palette: Vec<u8> = palette.iter().flat_map(|c| [c.r, c.g, c.b]).collect();
-
-                let mut gif_frame = GifFrame::default();
-                gif_frame.width = rgba.width() as u16;
-                gif_frame.height = rgba.height() as u16;
-                gif_frame.delay = delay_cs;
-                gif_frame.palette = Some(gif_palette);
-                gif_frame.buffer = std::borrow::Cow::Owned(pixels);
-
-                if let Some(transparent_idx) = palette.iter().position(|c| c.a < 128) {
-                    gif_frame.transparent = Some(transparent_idx as u8);
-                }
-
-                let _ = encoder.write_frame(&gif_frame);
-            }
-        }
-    }
-
-    // Only return if smaller
-    if !output.is_empty() && output.len() < original_size {
-        Ok(output)
+    encoded?;
+    Ok(if output.bytes.len() < data.len() {
+        output.bytes
     } else {
-        Ok(data.to_vec())
-    }
+        data.to_vec()
+    })
 }
 
-fn quantize_frame_data(
-    rgba: &RgbaImage,
-    max_colors: u16,
-) -> Option<(Vec<imagequant::RGBA>, Vec<u8>)> {
-    let width = rgba.width() as usize;
-    let height = rgba.height() as usize;
+// Stop encoding when an animation can no longer satisfy the size contract.
+// This also caps memory for long animations whose composited frames grow greatly.
+struct AnimationOutput {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
 
-    let mut liq = imagequant::new();
-    liq.set_speed(8).ok()?; // Faster for animation
-    liq.set_max_colors(max_colors as u32).ok()?;
+impl Write for AnimationOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            self.exceeded = true;
+            return Err(io::Error::other("animation exceeds output size budget"));
+        }
+        self.bytes
+            .try_reserve(bytes.len())
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
 
-    let rgba_pixels: Vec<imagequant::RGBA> = rgba
-        .as_raw()
-        .chunks_exact(4)
-        .map(|c| imagequant::RGBA {
-            r: c[0],
-            g: c[1],
-            b: c[2],
-            a: c[3],
-        })
-        .collect();
-
-    let mut img_data = liq.new_image(rgba_pixels, width, height, 0.0).ok()?;
-    let mut res = liq.quantize(&mut img_data).ok()?;
-    let (palette, pixels) = res.remapped(&mut img_data).ok()?;
-
-    Some((palette, pixels))
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub fn count_gif_frames(data: &[u8]) -> u32 {
-    let mut count = 0u32;
-    let mut i = 13; // Skip header
-
-    // Skip global color table
-    if data.len() > 10 {
-        let flags = data[10];
-        if (flags & 0x80) != 0 {
-            let table_size = 3 * (1 << ((flags & 0x07) + 1));
-            i += table_size as usize;
-        }
-    }
-
-    while i < data.len() {
-        match data.get(i) {
-            Some(0x2C) => {
-                // Image descriptor
-                count += 1;
-                i += 10;
-                // Skip local color table if present
-                if let Some(&local_flags) = data.get(i - 1) {
-                    if (local_flags & 0x80) != 0 {
-                        let table_size = 3 * (1 << ((local_flags & 0x07) + 1));
-                        i += table_size as usize;
-                    }
-                }
-                // Skip LZW min code size + sub-blocks
-                i += 1;
-                while i < data.len() {
-                    let block_size = data.get(i).copied().unwrap_or(0) as usize;
-                    if block_size == 0 {
-                        i += 1;
-                        break;
-                    }
-                    i += block_size + 1;
-                }
-            }
-            Some(0x21) => {
-                // Extension
-                i += 2;
-                while i < data.len() {
-                    let block_size = data.get(i).copied().unwrap_or(0) as usize;
-                    if block_size == 0 {
-                        i += 1;
-                        break;
-                    }
-                    i += block_size + 1;
-                }
-            }
-            Some(0x3B) => break, // Trailer
-            _ => i += 1,
-        }
-    }
-
-    count
+    let mut analysis = FileAnalysis::new(crate::detection::FileFormat::Gif, data.len() as u64);
+    crate::analysis::analyze_gif(data, &mut analysis).ok();
+    analysis.frame_count.unwrap_or(0)
 }

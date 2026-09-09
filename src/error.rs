@@ -3,14 +3,13 @@ use wasm_bindgen::prelude::*;
 
 #[derive(Error, Debug, Clone)]
 pub enum CompressionError {
-    // Recoverable errors
     #[error("Unsupported format '{detected}'{}", .fallback.as_ref().map(|f| format!(", try {}", f)).unwrap_or_default())]
     UnsupportedFormat {
         detected: String,
         fallback: Option<String>,
     },
 
-    #[error("Chunk {chunk_id} corrupted{}", if *.can_retry { ", retrying..." } else { "" })]
+    #[error("Chunk {chunk_id} corrupted{}", if *.can_retry { ", retry available" } else { "" })]
     ChunkCorrupted { chunk_id: u64, can_retry: bool },
 
     #[error("Storage full: need {required_bytes} bytes")]
@@ -19,7 +18,6 @@ pub enum CompressionError {
     #[error("Storage unavailable: {reason}")]
     StorageUnavailable { reason: String },
 
-    // Fatal errors
     #[error("Invalid config for '{field}': {reason}")]
     InvalidConfig { field: String, reason: String },
 
@@ -44,7 +42,6 @@ pub enum CompressionError {
     #[error("Invalid input: {reason}")]
     InvalidInput { reason: String },
 
-    // Partial success
     #[error("Partial result: {completed_chunks}/{total_chunks} chunks processed")]
     PartialResult {
         completed_chunks: u64,
@@ -57,8 +54,10 @@ impl CompressionError {
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            CompressionError::ChunkCorrupted { can_retry: true, .. }
-                | CompressionError::StorageFull { .. }
+            CompressionError::ChunkCorrupted {
+                can_retry: true,
+                ..
+            } | CompressionError::StorageFull { .. }
                 | CompressionError::PartialResult { .. }
         )
     }
@@ -88,8 +87,23 @@ impl From<CompressionError> for JsValue {
         let _ = js_sys::Reflect::set(&obj, &"code".into(), &err.error_code().into());
         let _ = js_sys::Reflect::set(&obj, &"message".into(), &err.to_string().into());
         let _ = js_sys::Reflect::set(&obj, &"recoverable".into(), &err.is_recoverable().into());
+        if let CompressionError::InvalidConfig { field, .. } = &err {
+            let _ = js_sys::Reflect::set(&obj, &"field".into(), &field.as_str().into());
+        }
         obj.into()
     }
 }
 
 pub type Result<T> = std::result::Result<T, CompressionError>;
+
+/// Extract useful JS Error/DOMException messages without dumping opaque handles.
+pub(crate) fn js_error_message(error: &JsValue) -> String {
+    error
+        .as_string()
+        .or_else(|| {
+            js_sys::Reflect::get(error, &"message".into())
+                .ok()
+                .and_then(|value| value.as_string())
+        })
+        .unwrap_or_else(|| "JavaScript operation failed".into())
+}

@@ -1,8 +1,10 @@
 [package]
 name = "mmm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "multimicromedia — client-side media compression via WASM"
+license = "MIT"
+repository = "https://github.com/tmburt04/multimicromedia"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -13,17 +15,8 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
-    "console",
-    "Blob",
-    "BlobPropertyBag",
     "DomStringList",
     "Event",
-    "EventTarget",
-    "File",
-    "FileReader",
-    "FileSystemDirectoryHandle",
-    "FileSystemFileHandle",
-    "FileSystemWritableFileStream",
     "IdbDatabase",
     "IdbFactory",
     "IdbObjectStore",
@@ -32,10 +25,6 @@ web-sys = { version = "0.3", features = [
     "IdbRequest",
     "IdbTransaction",
     "IdbTransactionMode",
-    "Navigator",
-    "StorageManager",
-    "Window",
-    "WorkerGlobalScope",
 ] }
 
 # Image processing
@@ -49,14 +38,11 @@ image = { version = "0.25", default-features = false, features = [
     "ico",
 ] }
 png = "0.17"
-imagequant = "4"
-rgb = "0.8"
-zune-jpeg = "0.4"
+color_quant = "1.1"
 gif = "0.13"
 
 # SVG processing
 roxmltree = "0.20"
-xmlwriter = "0.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -69,8 +55,8 @@ thiserror = "2"
 console_error_panic_hook = "0.1"
 regex = "1"
 
-# Async runtime for WASM
-futures = "0.3"
+# One-shot completion channels for IndexedDB
+futures-channel = "0.3"
 
 [profile.release]
 opt-level = 3

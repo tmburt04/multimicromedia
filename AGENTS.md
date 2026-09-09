@@ -39,11 +39,11 @@ src/
 ```bash
 ./scripts/build.sh web      # → pkg/mmm-js.js, mmm-js_bg.wasm
 ./scripts/build.sh node     # → pkg/mmm-node.js, mmm-node_bg.wasm
-./scripts/serve.sh          # Testbench UI (auto-fetches FFmpeg)
+./scripts/serve.sh          # Testbench UI (copies FFmpeg from node_modules)
 ```
 
 ## Gotchas
 
 - **BigInt**: WASM u64 → JS BigInt. Use f64 for JS-exposed sizes.
 - **webp crate**: Native deps fail. Use `image` crate encoder.
-- **FFmpeg**: Unavailable in Node. Works in browser with bridge.
+- **FFmpeg**: Requires an external JS bridge. Browser and optional Node bridges are in `bench/`.

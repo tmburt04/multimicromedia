@@ -2,8 +2,8 @@
  * Compression Testbench
  */
 
-// Try mmm-js.js first (new naming), fallback to legacy
-const WASM_PATHS = ['./pkg/mmm-js.js', './pkg/compression_wasm.js'];
+// Individual browser build, then the all-target browser build.
+const WASM_PATHS = ['./pkg/mmm-js.js', './pkg/web/mmm-js.js'];
 const TESTDATA_PATH = './testdata';
 
 const TESTDATA_MANIFEST = {
@@ -31,74 +31,63 @@ const TESTDATA_MANIFEST = {
 let wasm = null;
 let currentFile = null;
 let currentFileData = null;
+let currentAnalysis = null;
 let compressedData = null;
 let compressedMime = null;
+let compressedExtension = null;
 let testdataFiles = [];
 let batchResults = [];
 let batchRunning = false;
 let batchAbort = false;
+let compressionRunning = false;
+let fileLoadVersion = 0;
+let fileLoadController = null;
+let batchController = null;
+let loadingOperation = 0;
+let supportedFormats = null;
+const previewUrls = new Map();
 
-// ============================================================================
 // WASM Initialization
-// ============================================================================
 
 async function initWasm() {
-    let module = null;
-    let loadedPath = null;
-    
+    let failure;
     for (const path of WASM_PATHS) {
         try {
-            module = await import(path);
-            loadedPath = path;
-            break;
-        } catch {}
+            const module = await import(path);
+            if (typeof module.default === 'function') await module.default();
+            module.init_panic_hook();
+            supportedFormats = module.get_supported_formats();
+            wasm = module;
+            document.getElementById('wasm-status').classList.remove('loading');
+            document.getElementById('wasm-status').classList.add('ready');
+            document.getElementById('wasm-status-text').textContent = 'WASM Ready';
+            document.getElementById('version').textContent = 'v' + wasm.get_version();
+            loadTestdata();
+            if (currentFileData) handleFileData(currentFileData, currentFile.name);
+            else updateOutputFormats();
+            initFFmpeg();
+            return true;
+        } catch (error) { failure = error; }
     }
-    
-    if (!module) {
-        console.error('WASM init failed: no module found');
-        document.getElementById('wasm-status').classList.remove('loading');
-        document.getElementById('wasm-status-text').textContent = 'WASM Error: module not found';
-        loadTestdata();
-        return false;
-    }
-    
-    try {
-        if (typeof module.default === 'function') {
-            await module.default();
-        }
-        wasm = module;
-        wasm.init_panic_hook();
-
-        document.getElementById('wasm-status').classList.remove('loading');
-        document.getElementById('wasm-status').classList.add('ready');
-        document.getElementById('wasm-status-text').textContent = 'WASM Ready';
-        document.getElementById('version').textContent = 'v' + wasm.get_version();
-
-        loadTestdata();
-        updateOutputFormats();
-        initFFmpeg();
-
-        return true;
-    } catch (err) {
-        console.error('WASM init failed:', err);
-        document.getElementById('wasm-status').classList.remove('loading');
-        document.getElementById('wasm-status-text').textContent = 'WASM Error: ' + err.message;
-        loadTestdata();
-        return false;
-    }
+    wasm = null;
+    console.error('WASM init failed:', failure);
+    document.getElementById('wasm-status').classList.remove('loading');
+    document.getElementById('wasm-status-text').textContent = 'WASM Error: ' + errorMessage(failure);
+    loadTestdata();
+    return false;
 }
 
 async function initFFmpeg() {
     const statusDot = document.getElementById('ffmpeg-status');
     const statusText = document.getElementById('ffmpeg-status-text');
-    
+
     statusDot.classList.add('loading');
     statusText.textContent = 'FFmpeg: Loading...';
-    
+
     try {
         if (typeof window.FFmpegLoader !== 'undefined') {
             const loaded = await window.FFmpegLoader.load();
-            
+
             if (loaded && window.__ffmpeg__.isAvailable()) {
                 statusDot.classList.remove('loading');
                 statusDot.classList.add('ready');
@@ -118,9 +107,7 @@ async function initFFmpeg() {
     }
 }
 
-// ============================================================================
 // Testdata Loading
-// ============================================================================
 
 function loadTestdata() {
     const container = document.getElementById('testdata-content');
@@ -175,40 +162,63 @@ function loadTestdata() {
     }
 }
 
-async function loadTestdataFile(path, name) {
-    try {
-        showLoading('Loading file...');
-        const response = await fetch(path);
-        if (!response.ok) throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
-
-        const arrayBuffer = await response.arrayBuffer();
-        const data = new Uint8Array(arrayBuffer);
-
-        document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
-        const selectedEl = document.querySelector(`.tree-file[data-path="${path}"]`);
-        if (selectedEl) {
-            selectedEl.classList.add('selected');
-            const sizeEl = selectedEl.querySelector('.tree-file-size');
-            if (sizeEl) sizeEl.textContent = formatBytes(data.length);
-        }
-
-        await handleFileData(data, name);
-    } catch (err) {
-        console.error('Load error:', err);
-        alert('Failed to load file: ' + err.message);
-    } finally {
-        hideLoading();
-    }
+function beginFileLoad() {
+    fileLoadController?.abort();
+    fileLoadController = new AbortController();
+    fileLoadVersion++;
+    currentFile = null;
+    currentFileData = null;
+    currentAnalysis = null;
+    clearCompressionResult();
+    clearPreview('original-preview');
+    document.getElementById('file-info').classList.add('hidden');
+    document.getElementById('compress-btn').disabled = true;
+    return fileLoadVersion;
 }
 
-// ============================================================================
-// File Handling
-// ============================================================================
+async function loadTestdataFile(path, name) {
+    const version = beginFileLoad();
+    const loading = showLoading('Loading file...');
+    try {
+        const response = await fetch(path, { signal: fileLoadController.signal });
+        if (!response.ok) throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+        const data = new Uint8Array(await response.arrayBuffer());
+        if (version !== fileLoadVersion) return;
+        document.querySelectorAll('.tree-file').forEach(el => el.classList.remove('selected'));
+        const selectedEl = testdataFiles.find(file => file.path === path)?.element;
+        if (selectedEl) {
+            selectedEl.classList.add('selected');
+            selectedEl.querySelector('.tree-file-size').textContent = formatBytes(data.length);
+        }
+        handleFileData(data, name);
+    } catch (error) {
+        if (version === fileLoadVersion && error?.name !== 'AbortError') {
+            console.error('Load error:', error);
+            alert('Failed to load file: ' + errorMessage(error));
+        }
+    } finally { hideLoading(loading); }
+}
 
-async function handleFileData(data, name) {
-    currentFile = { name, data };
+async function loadLocalFile(file) {
+    const version = beginFileLoad();
+    const loading = showLoading('Loading file...');
+    try {
+        const data = new Uint8Array(await file.arrayBuffer());
+        if (version === fileLoadVersion) handleFileData(data, file.name);
+    } catch (error) {
+        if (version === fileLoadVersion) alert('Failed to load file: ' + errorMessage(error));
+    } finally { hideLoading(loading); }
+}
+
+// File Handling
+
+function handleFileData(data, name) {
+    currentFile = { name };
     currentFileData = data;
-    compressedData = null;
+    currentAnalysis = null;
+    clearCompressionResult();
+    clearPreview('original-preview');
+    document.getElementById('compress-btn').disabled = true;
 
     document.getElementById('file-info').classList.remove('hidden');
     document.getElementById('file-name').textContent = name;
@@ -217,8 +227,9 @@ async function handleFileData(data, name) {
     if (wasm) {
         try {
             const analysis = wasm.analyze_file(data);
-            const mime = wasm.detect_file_mime(data);
-            const type = wasm.detect_file_type(data);
+            currentAnalysis = analysis;
+            const mime = analysis.mime;
+            const type = analysis.format;
 
             document.getElementById('file-type').textContent = `${type.toUpperCase()} (${mime})`;
 
@@ -231,13 +242,13 @@ async function handleFileData(data, name) {
             updateFormForType(analysis);
             updateOutputFormats(analysis);
             showOriginalPreview(data, mime);
+            document.getElementById('compress-btn').disabled = compressionRunning || batchRunning || type === 'unknown';
         } catch (err) {
             console.error('Analysis error:', err);
             document.getElementById('file-type').textContent = 'Unknown';
             document.getElementById('file-dimensions').textContent = '-';
         }
 
-        document.getElementById('compress-btn').disabled = false;
     } else {
         document.getElementById('file-type').textContent = 'WASM not loaded';
         document.getElementById('file-dimensions').textContent = '-';
@@ -246,31 +257,29 @@ async function handleFileData(data, name) {
 }
 
 function updateFormForType(analysis) {
-    const format = analysis.format?.toLowerCase() || '';
-    const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff', 'svg', 'avif', 'heic'].includes(format);
-    const isAudioVideo = ['mp3', 'wav', 'flac', 'ogg', 'aac', 'mp4', 'webm', 'mov', 'avi', 'mkv'].includes(format);
-
-    document.getElementById('image-options').style.display = isImage ? 'block' : 'none';
-    document.getElementById('audio-video-options').style.display = isAudioVideo ? 'block' : 'none';
+    const mime = analysis.mime || '';
+    const transforms = /^(image|video)\//.test(mime) && analysis.format !== 'svg'
+        && !(analysis.isAnimated && ['png', 'webp'].includes(analysis.format));
+    document.getElementById('image-options').style.display = transforms ? 'block' : 'none';
+    document.getElementById('audio-video-options').style.display = /^(audio|video)\//.test(mime) ? 'block' : 'none';
 }
 
 function updateOutputFormats(analysis) {
     const select = document.getElementById('output-format');
-    select.innerHTML = '<option value="">Auto (same as input)</option>';
+    select.innerHTML = '<option value="">Auto</option>';
 
     if (!wasm) return;
 
-    const formats = wasm.get_supported_formats();
+    const formats = supportedFormats;
     let relevantFormats = [];
 
-    const format = analysis?.format?.toLowerCase() || '';
-    const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff', 'svg', 'avif', 'heic', 'ico'].includes(format);
-    const isAudio = ['mp3', 'wav', 'flac', 'ogg', 'aac', 'opus'].includes(format);
-    const isVideo = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'wmv', 'flv'].includes(format);
-
-    if (isImage || !analysis) relevantFormats = relevantFormats.concat(formats.images || []);
-    if (isAudio || !analysis) relevantFormats = relevantFormats.concat(formats.audio || []);
-    if (isVideo || !analysis) relevantFormats = relevantFormats.concat(formats.video || []);
+    const mime = analysis?.mime || '';
+    if (mime.startsWith('image/') || !analysis) relevantFormats.push(...formats.images);
+    if (mime.startsWith('audio/') || mime.startsWith('video/') || !analysis) relevantFormats.push(...formats.audio);
+    if (mime.startsWith('video/') || !analysis) relevantFormats.push(...formats.video);
+    if (analysis?.format === 'svg') relevantFormats = [];
+    if (analysis?.isAnimated) relevantFormats = relevantFormats.filter(fmt => fmt.extension === analysis.format);
+    relevantFormats = relevantFormats.filter(fmt => !['svg', 'heic', 'avif'].includes(fmt.extension));
 
     for (const fmt of relevantFormats) {
         const option = document.createElement('option');
@@ -280,79 +289,110 @@ function updateOutputFormats(analysis) {
     }
 }
 
-// ============================================================================
 // Preview
-// ============================================================================
 
-function showOriginalPreview(data, mime) {
-    const container = document.getElementById('original-preview');
-    container.innerHTML = '';
-
-    if (mime && mime.startsWith('image/')) {
-        const blob = new Blob([data], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const img = document.createElement('img');
-        img.src = url;
-        img.onload = () => URL.revokeObjectURL(url);
-        img.onerror = () => {
-            container.innerHTML = '<span class="placeholder">Failed to load preview</span>';
-        };
-        container.appendChild(img);
-    } else {
-        container.innerHTML = '<span class="placeholder">Preview not available for this format</span>';
-    }
+function clearPreview(containerId) {
+    const url = previewUrls.get(containerId);
+    if (url) URL.revokeObjectURL(url);
+    previewUrls.delete(containerId);
+    document.getElementById(containerId).replaceChildren();
 }
 
-function showCompressedPreview(data, mime) {
-    const container = document.getElementById('compressed-preview');
-    container.innerHTML = '';
-
-    if (mime && mime.startsWith('image/')) {
-        const blob = new Blob([data], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const img = document.createElement('img');
-        img.src = url;
-        img.onload = () => URL.revokeObjectURL(url);
-        img.onerror = () => {
-            container.innerHTML = '<span class="placeholder">Failed to load preview</span>';
-        };
-        container.appendChild(img);
-    } else {
-        container.innerHTML = '<span class="placeholder">Preview not available for this format</span>';
-    }
+function clearCompressionResult() {
+    compressedData = null;
+    compressedMime = null;
+    compressedExtension = null;
+    clearPreview('compressed-preview');
+    document.getElementById('download-btn').disabled = true;
+    document.getElementById('results-content').classList.add('hidden');
+    document.getElementById('results-empty').classList.remove('hidden');
 }
 
-// ============================================================================
+function showPreview(containerId, data, mime) {
+    clearPreview(containerId);
+    const container = document.getElementById(containerId);
+    if (mime?.startsWith('image/')) {
+        const url = URL.createObjectURL(new Blob([data], { type: mime }));
+        previewUrls.set(containerId, url);
+        const img = document.createElement('img');
+        img.alt = containerId === 'original-preview' ? 'Original image' : 'Compressed image';
+        const release = failed => {
+            URL.revokeObjectURL(url);
+            if (previewUrls.get(containerId) !== url) return;
+            previewUrls.delete(containerId);
+            if (failed) container.textContent = 'Failed to load preview';
+        };
+        img.onload = () => release(false);
+        img.onerror = () => release(true);
+        img.src = url;
+        container.appendChild(img);
+    } else { container.textContent = 'Preview not available for this format'; }
+}
+const showOriginalPreview = (data, mime) => showPreview('original-preview', data, mime);
+const showCompressedPreview = (data, mime) => showPreview('compressed-preview', data, mime);
+
 // Compression
-// ============================================================================
+
+function resultStats(result) {
+    return {
+        original_size: result.original_size,
+        compressed_size: result.compressed_size,
+        compression_ratio: result.compression_ratio,
+        time_ms: result.time_ms,
+        format_in: result.format_in,
+        format_out: result.format_out
+    };
+}
+
+function updateProcessingButtons() {
+    document.getElementById('compress-btn').disabled = !wasm || !currentFileData || !currentAnalysis || currentAnalysis.format === 'unknown' || compressionRunning || batchRunning;
+    document.getElementById('run-all-btn').disabled = !wasm || compressionRunning || batchRunning || !testdataFiles.length;
+    document.getElementById('clear-results-btn').disabled = batchRunning;
+}
 
 async function compress() {
-    if (!wasm || !currentFileData) return;
-
-    showLoading('Compressing...');
-
+    if (!wasm || !currentFileData || !currentAnalysis || currentAnalysis.format === 'unknown' || compressionRunning || batchRunning) return;
+    compressionRunning = true;
+    const file = currentFile;
+    const loading = showLoading('Compressing...');
+    clearCompressionResult();
+    updateProcessingButtons();
+    let result;
     try {
-        const config = buildConfig();
-        const result = await wasm.compress(currentFileData, JSON.stringify(config));
-
-        compressedData = result.data;
-        compressedMime = getMimeForFormat(result.format_out);
-
+        result = await wasm.compress(currentFileData, JSON.stringify(buildConfig()));
+        if (file !== currentFile) return;
+        const stats = resultStats(result);
+        const ownedResult = result;
+        result = null; // into_data consumes the Rust result.
+        compressedData = ownedResult.into_data();
+        compressedExtension = stats.format_out;
+        compressedMime = Object.values(supportedFormats).flat()
+            .find(format => format.extension === compressedExtension)?.mime || 'application/octet-stream';
         showCompressedPreview(compressedData, compressedMime);
-        updateStats(result);
-
+        updateStats(stats);
         document.getElementById('results-empty').classList.add('hidden');
         document.getElementById('results-content').classList.remove('hidden');
         document.getElementById('download-btn').disabled = false;
-    } catch (err) {
-        console.error('Compression error:', err);
-        alert('Compression failed: ' + err.message);
+    } catch (error) {
+        console.error('Compression error:', error);
+        if (file === currentFile) {
+            clearCompressionResult();
+            alert('Compression failed: ' + errorMessage(error));
+        }
     } finally {
-        hideLoading();
+        result?.free();
+        compressionRunning = false;
+        updateProcessingButtons();
+        hideLoading(loading);
     }
 }
 
-function buildConfig() {
+function buildConfig(forBatch = false) {
+    const format = currentAnalysis?.format;
+    const mime = currentAnalysis?.mime || '';
+    const mediaOptions = forBatch || /^(audio|video)\//.test(mime);
+    const imageOptions = forBatch || ((mime.startsWith('image/') || mime.startsWith('video/'))
+        && format !== 'svg' && !(currentAnalysis?.isAnimated && ['png', 'webp'].includes(format)));
     const config = {
         quality: parseInt(document.getElementById('quality').value)
     };
@@ -362,7 +402,7 @@ function buildConfig() {
 
     const resizeWidth = document.getElementById('resize-width').value;
     const resizeHeight = document.getElementById('resize-height').value;
-    if (resizeWidth || resizeHeight) {
+    if (imageOptions && (resizeWidth || resizeHeight)) {
         config.resize = {
             width: resizeWidth ? parseInt(resizeWidth) : null,
             height: resizeHeight ? parseInt(resizeHeight) : null,
@@ -373,7 +413,7 @@ function buildConfig() {
 
     const trimStart = document.getElementById('trim-start').value;
     const trimEnd = document.getElementById('trim-end').value;
-    if (trimStart || trimEnd) {
+    if (mediaOptions && (trimStart || trimEnd)) {
         config.trim = {
             start_ms: trimStart ? parseInt(trimStart) : null,
             end_ms: trimEnd ? parseInt(trimEnd) : null
@@ -381,7 +421,7 @@ function buildConfig() {
     }
 
     const audioBitrate = document.getElementById('audio-bitrate').value;
-    if (audioBitrate) {
+    if (mediaOptions && audioBitrate) {
         config.ffmpeg = { audio_bitrate: audioBitrate };
     }
 
@@ -414,81 +454,93 @@ function updateStats(result) {
     }
 }
 
-// ============================================================================
 // Batch Processing
-// ============================================================================
 
 async function runBatch() {
-    if (!wasm || testdataFiles.length === 0) return;
+    if (!wasm || batchRunning || compressionRunning || testdataFiles.length === 0) return;
 
     batchRunning = true;
     batchAbort = false;
     batchResults = [];
+    batchController = new AbortController();
+    updateDashboardTable();
+    updateProcessingButtons();
 
     document.getElementById('run-all-btn').disabled = true;
     document.getElementById('stop-btn').disabled = false;
     document.getElementById('batch-progress').classList.remove('hidden');
     document.getElementById('batch-summary').classList.add('hidden');
 
-    const config = buildConfig();
     let processed = 0;
+    try {
+        const configJson = JSON.stringify(buildConfig(true));
 
-    for (const file of testdataFiles) {
-        if (batchAbort) break;
+        for (const file of testdataFiles) {
+            if (batchAbort) break;
 
-        updateBatchProgress(processed, testdataFiles.length, `Processing ${file.name}...`);
-        updateFileRowStatus(file, 'processing');
+            updateBatchProgress(processed, testdataFiles.length, `Processing ${file.name}...`);
+            updateFileRowStatus(file, 'processing');
 
-        try {
-            const response = await fetch(file.path);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
-            const arrayBuffer = await response.arrayBuffer();
-            const data = new Uint8Array(arrayBuffer);
+            let result;
+            try {
+                const response = await fetch(file.path, { signal: batchController.signal });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-            const startTime = performance.now();
-            const result = await wasm.compress(data, JSON.stringify(config));
-            const endTime = performance.now();
+                const arrayBuffer = await response.arrayBuffer();
+                const data = new Uint8Array(arrayBuffer);
+                if (batchAbort) break;
 
-            batchResults.push({
-                file: file.name,
-                category: file.category,
-                originalSize: result.original_size,
-                compressedSize: result.compressed_size,
-                ratio: result.compression_ratio,
-                time: Math.round(endTime - startTime),
-                formatIn: result.format_in,
-                formatOut: result.format_out,
-                error: null
-            });
+                const startTime = performance.now();
+                result = await wasm.compress(data, configJson);
+                const endTime = performance.now();
 
-            updateFileRowResult(file, batchResults[batchResults.length - 1]);
-        } catch (err) {
-            batchResults.push({
-                file: file.name,
-                category: file.category,
-                originalSize: 0,
-                compressedSize: 0,
-                ratio: 0,
-                time: 0,
-                error: err.message || String(err)
-            });
-            updateFileRowError(file, err.message || String(err));
+                batchResults.push({
+                    file: file.name,
+                    category: file.category,
+                    originalSize: result.original_size,
+                    compressedSize: result.compressed_size,
+                    ratio: result.compression_ratio,
+                    time: Math.round(endTime - startTime),
+                    formatIn: result.format_in,
+                    formatOut: result.format_out,
+                    error: null
+                });
+
+                updateFileRowResult(file, batchResults[batchResults.length - 1]);
+            } catch (err) {
+                if (batchAbort && err?.name === 'AbortError') break;
+                batchResults.push({
+                    file: file.name,
+                    category: file.category,
+                    originalSize: 0,
+                    compressedSize: 0,
+                    ratio: 0,
+                    time: 0,
+                    error: errorMessage(err)
+                });
+                updateFileRowError(file, errorMessage(err));
+            } finally { result?.free(); }
+
+            processed++;
         }
 
-        processed++;
+    } catch (error) {
+        alert('Batch failed: ' + errorMessage(error));
+    } finally {
+        batchRunning = false;
+        batchController = null;
+        updateProcessingButtons();
+        document.querySelectorAll('#dashboard-tbody .spinner').forEach(spinner => { spinner.parentElement.textContent = 'Stopped'; });
+        document.getElementById('stop-btn').disabled = true;
+        document.getElementById('batch-progress').classList.add('hidden');
+
+        updateBatchSummary();
     }
-
-    batchRunning = false;
-    document.getElementById('run-all-btn').disabled = false;
-    document.getElementById('stop-btn').disabled = true;
-    document.getElementById('batch-progress').classList.add('hidden');
-
-    updateBatchSummary();
 }
 
 function stopBatch() {
     batchAbort = true;
+    batchController?.abort();
 }
 
 function updateBatchProgress(current, total, text) {
@@ -507,7 +559,7 @@ function updateDashboardTable() {
         tr.innerHTML = `
             <td class="status-cell">-</td>
             <td>${file.name}</td>
-            <td><span class="badge badge-${file.category}">${file.category}</span></td>
+            <td><span class="badge badge-${file.category === 'images' ? 'image' : file.category}">${file.category}</span></td>
             <td>-</td>
             <td>-</td>
             <td>-</td>
@@ -576,19 +628,18 @@ function updateBatchSummary() {
 }
 
 function clearBatchResults() {
+    if (batchRunning) return;
     batchResults = [];
     updateDashboardTable();
     document.getElementById('batch-summary').classList.add('hidden');
 }
 
-// ============================================================================
 // Download & Export
-// ============================================================================
 
 function downloadCompressed() {
     if (!compressedData || !currentFile) return;
 
-    const ext = compressedMime.split('/')[1] || 'bin';
+    const ext = compressedExtension || 'bin';
     const fileName = currentFile.name.replace(/\.[^.]+$/, '') + '_compressed.' + ext;
 
     const blob = new Blob([compressedData], { type: compressedMime });
@@ -600,10 +651,10 @@ function downloadCompressed() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function copyStats() {
+async function copyStats() {
     if (!compressedData) return;
 
     const stats = {
@@ -614,58 +665,37 @@ function copyStats() {
         time: document.getElementById('stats-time').textContent
     };
 
-    navigator.clipboard.writeText(JSON.stringify(stats, null, 2));
+    try { await navigator.clipboard.writeText(JSON.stringify(stats, null, 2)); }
+    catch (error) { alert('Could not copy stats: ' + (error.message || String(error))); }
 }
 
-// ============================================================================
 // Utilities
-// ============================================================================
 
 function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const i = Math.max(0, Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k))));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function getMimeForFormat(format) {
-    const mimeMap = {
-        png: 'image/png',
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        webp: 'image/webp',
-        gif: 'image/gif',
-        avif: 'image/avif',
-        bmp: 'image/bmp',
-        tiff: 'image/tiff',
-        svg: 'image/svg+xml',
-        mp3: 'audio/mpeg',
-        wav: 'audio/wav',
-        flac: 'audio/flac',
-        ogg: 'audio/ogg',
-        aac: 'audio/aac',
-        mp4: 'video/mp4',
-        webm: 'video/webm',
-        mov: 'video/quicktime',
-        avi: 'video/x-msvideo',
-        mkv: 'video/x-matroska'
-    };
-    return mimeMap[format] || 'application/octet-stream';
+function errorMessage(error) {
+    return error?.message || String(error ?? 'Unknown error');
 }
 
 function showLoading(text) {
+    const operation = ++loadingOperation;
     document.getElementById('loading-text').textContent = text;
     document.getElementById('loading-overlay').classList.remove('hidden');
+    return operation;
 }
 
-function hideLoading() {
+function hideLoading(operation) {
+    if (operation !== loadingOperation) return;
     document.getElementById('loading-overlay').classList.add('hidden');
 }
 
-// ============================================================================
 // UI Toggles (exposed globally)
-// ============================================================================
 
 window.togglePanel = function(panelId) {
     const panel = document.getElementById(panelId);
@@ -678,9 +708,7 @@ window.toggleTreeCategory = function(categoryEl) {
     arrow.textContent = categoryEl.classList.contains('collapsed') ? '▶' : '▼';
 };
 
-// ============================================================================
 // Event Listeners
-// ============================================================================
 
 function initEventListeners() {
     document.getElementById('quality').addEventListener('input', (e) => {
@@ -698,6 +726,9 @@ function initEventListeners() {
     const fileInput = document.getElementById('file-input');
 
     dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fileInput.click(); }
+    });
 
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -714,23 +745,19 @@ function initEventListeners() {
 
         const file = e.dataTransfer.files[0];
         if (file) {
-            const arrayBuffer = await file.arrayBuffer();
-            await handleFileData(new Uint8Array(arrayBuffer), file.name);
+            await loadLocalFile(file);
         }
     });
 
     fileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (file) {
-            const arrayBuffer = await file.arrayBuffer();
-            await handleFileData(new Uint8Array(arrayBuffer), file.name);
+            await loadLocalFile(file);
         }
     });
 }
 
-// ============================================================================
 // Initialize
-// ============================================================================
 
 initEventListeners();
 initWasm();

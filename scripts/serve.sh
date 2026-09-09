@@ -2,7 +2,7 @@
 # Testbench server with auto-setup
 # Usage: ./scripts/serve.sh [port]
 
-set -e
+set -euo pipefail
 
 PORT="${1:-8080}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,7 +12,7 @@ FFMPEG_DIR="$BENCH_DIR/ffmpeg"
 cd "$ROOT_DIR"
 
 # Build WASM if missing
-if [ ! -f "pkg/mmm-js.js" ] && [ ! -f "pkg/compression_wasm.js" ]; then
+if [ ! -f "pkg/mmm-js.js" ] && [ ! -f "pkg/web/mmm-js.js" ]; then
     echo "⚠️  WASM module not found. Building..."
     if command -v wasm-pack &> /dev/null; then
         wasm-pack build --target web --release --out-name mmm-js
@@ -25,7 +25,7 @@ fi
 # Create symlinks
 cd "$BENCH_DIR"
 
-if [ ! -e "testdata" ]; then
+if [ -d "../testdata" ] && [ ! -e "testdata" ]; then
     ln -s ../testdata testdata
     echo "✓ Linked: testdata"
 fi
@@ -72,9 +72,9 @@ echo ""
 
 # Serve
 if command -v python3 &> /dev/null; then
-    python3 -m http.server "$PORT"
+    python3 -m http.server "$PORT" --bind 127.0.0.1
 elif command -v python &> /dev/null; then
-    python -m http.server "$PORT"
+    python -m http.server "$PORT" --bind 127.0.0.1
 elif command -v npx &> /dev/null; then
     npx serve -l "$PORT"
 elif command -v php &> /dev/null; then

@@ -4,7 +4,34 @@ mod opfs;
 pub use indexeddb::*;
 pub use opfs::*;
 
-use crate::error::{CompressionError, Result};
+use crate::error::{js_error_message, CompressionError, Result};
+use wasm_bindgen::JsValue;
+
+const IO_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+
+fn storage_error(operation: &str, error: JsValue, required_bytes: u64) -> CompressionError {
+    let name = js_sys::Reflect::get(&error, &"name".into())
+        .ok()
+        .and_then(|value| value.as_string());
+    if name.as_deref() == Some("QuotaExceededError") {
+        CompressionError::StorageFull { required_bytes }
+    } else {
+        CompressionError::IoError {
+            detail: format!("{operation}: {}", js_error_message(&error)),
+        }
+    }
+}
+
+fn copy_array(data: &js_sys::Uint8Array) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let length = data.length() as usize;
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| CompressionError::MemoryLimitExceeded)?;
+    bytes.resize(length, 0);
+    data.copy_to(&mut bytes);
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageType {
@@ -17,14 +44,16 @@ pub struct StorageHandle {
     storage_type: StorageType,
     data: Vec<u8>,
     id: String,
+    size: usize,
 }
 
 impl StorageHandle {
     pub fn memory(data: Vec<u8>) -> Self {
         Self {
             storage_type: StorageType::Memory,
+            size: data.len(),
             data,
-            id: format!("mem_{}", js_sys::Math::random()),
+            id: new_storage_id(),
         }
     }
 
@@ -45,7 +74,7 @@ impl StorageHandle {
     }
 
     pub fn size(&self) -> usize {
-        self.data.len()
+        self.size
     }
 }
 
@@ -81,56 +110,62 @@ impl StorageManager {
             return Ok(StorageHandle::memory(data));
         }
 
-        // Try OPFS first
+        let mut storage_error = CompressionError::StorageUnavailable {
+            reason: "No persistent storage backend is available".into(),
+        };
+        // Try OPFS first.
         if self.preferred == StorageType::Opfs {
-            match store_to_opfs(&data).await {
+            match OpfsStorage::store(&data).await {
                 Ok(handle) => return Ok(handle),
-                Err(_) => {
-                    // Fall through to IndexedDB
-                }
+                Err(error) => storage_error = error,
             }
         }
 
-        // Try IndexedDB
-        match store_to_indexeddb(&data).await {
-            Ok(handle) => return Ok(handle),
-            Err(_) => {
-                // Last resort: memory (may fail for very large files)
+        if is_indexeddb_available() {
+            match IndexedDbStorage::store(&data).await {
+                Ok(handle) => return Ok(handle),
+                Err(error) => storage_error = error,
             }
         }
 
-        // Fallback to memory
-        if size > 256 * 1024 * 1024 {
-            return Err(CompressionError::MemoryLimitExceeded);
-        }
-
-        Ok(StorageHandle::memory(data))
+        // The memory budget is a limit, including when persistent storage fails.
+        Err(storage_error)
     }
 
     pub async fn retrieve(&self, handle: &StorageHandle) -> Result<Vec<u8>> {
-        match handle.storage_type {
-            StorageType::Memory => Ok(handle.data.clone()),
-            StorageType::Opfs => retrieve_from_opfs(&handle.id).await,
-            StorageType::IndexedDb => retrieve_from_indexeddb(&handle.id).await,
+        let data = match handle.storage_type {
+            StorageType::Memory => {
+                let mut data = Vec::new();
+                data.try_reserve_exact(handle.data.len())
+                    .map_err(|_| CompressionError::MemoryLimitExceeded)?;
+                data.extend_from_slice(&handle.data);
+                Ok(data)
+            }
+            StorageType::Opfs => OpfsStorage::retrieve(&handle.id).await,
+            StorageType::IndexedDb => IndexedDbStorage::retrieve(&handle.id).await,
+        }?;
+        if data.len() != handle.size {
+            return Err(CompressionError::IoError {
+                detail: "Stored file size changed".into(),
+            });
         }
+        Ok(data)
     }
 
     pub async fn delete(&self, handle: StorageHandle) -> Result<()> {
         match handle.storage_type {
             StorageType::Memory => Ok(()), // Nothing to clean up
-            StorageType::Opfs => delete_from_opfs(&handle.id).await,
-            StorageType::IndexedDb => delete_from_indexeddb(&handle.id).await,
+            StorageType::Opfs => OpfsStorage::delete(&handle.id).await,
+            StorageType::IndexedDb => IndexedDbStorage::delete(&handle.id).await,
         }
     }
 }
 
 fn detect_best_storage() -> StorageType {
-    // Check for OPFS support
     if is_opfs_available() {
         return StorageType::Opfs;
     }
 
-    // Check for IndexedDB support
     if is_indexeddb_available() {
         return StorageType::IndexedDb;
     }
@@ -139,9 +174,8 @@ fn detect_best_storage() -> StorageType {
 }
 
 fn is_opfs_available() -> bool {
-    // Check if navigator.storage.getDirectory is available
     let global = js_sys::global();
-    
+
     if let Ok(navigator) = js_sys::Reflect::get(&global, &"navigator".into()) {
         if let Ok(storage) = js_sys::Reflect::get(&navigator, &"storage".into()) {
             if let Ok(get_dir) = js_sys::Reflect::get(&storage, &"getDirectory".into()) {
@@ -155,7 +189,7 @@ fn is_opfs_available() -> bool {
 
 fn is_indexeddb_available() -> bool {
     let global = js_sys::global();
-    
+
     if let Ok(indexed_db) = js_sys::Reflect::get(&global, &"indexedDB".into()) {
         return !indexed_db.is_undefined() && !indexed_db.is_null();
     }
@@ -163,27 +197,10 @@ fn is_indexeddb_available() -> bool {
     false
 }
 
-async fn store_to_opfs(data: &[u8]) -> Result<StorageHandle> {
-    // OPFS implementation
-    OpfsStorage::store(data).await
-}
-
-async fn retrieve_from_opfs(id: &str) -> Result<Vec<u8>> {
-    OpfsStorage::retrieve(id).await
-}
-
-async fn delete_from_opfs(id: &str) -> Result<()> {
-    OpfsStorage::delete(id).await
-}
-
-async fn store_to_indexeddb(data: &[u8]) -> Result<StorageHandle> {
-    IndexedDbStorage::store(data).await
-}
-
-async fn retrieve_from_indexeddb(id: &str) -> Result<Vec<u8>> {
-    IndexedDbStorage::retrieve(id).await
-}
-
-async fn delete_from_indexeddb(id: &str) -> Result<()> {
-    IndexedDbStorage::delete(id).await
+fn new_storage_id() -> String {
+    format!(
+        "compress_{}_{}",
+        js_sys::Date::now() as u64,
+        js_sys::Math::random()
+    )
 }

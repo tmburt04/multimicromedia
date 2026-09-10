@@ -99,6 +99,14 @@
                             <div class="form-section" id="image-options">
                                 <div class="form-section-title">Image Options</div>
                                 <div class="form-group">
+                                    <label for="png-mode">PNG Compression</label>
+                                    <select id="png-mode">
+                                        <option value="quantize">Smaller file (lossy color reduction)</option>
+                                        <option value="lossless">Lossless (preserve pixels)</option>
+                                    </select>
+                                    <div class="form-hint">PNG output only. Color reduction uses up to 256 colors and can alter gradients and transparency. Lossless savings may be small on optimized files. The quality slider controls PNG encoding effort, not color count.</div>
+                                </div>
+                                <div class="form-group">
                                     <label>Resize Width</label>
                                     <input type="number" id="resize-width" placeholder="Auto" min="1" max="16384">
                                 </div>

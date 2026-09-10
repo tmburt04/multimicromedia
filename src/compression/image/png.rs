@@ -18,6 +18,11 @@ pub async fn compress_png(data: &[u8], config: &CompressionConfig) -> Result<Vec
     {
         return super::compress_generic(data, config, config.output_format).await;
     }
+    optimize_png(data, config)
+}
+
+/// Optimize encoded still PNG bytes; transforms have already been applied by callers.
+pub(super) fn optimize_png(data: &[u8], config: &CompressionConfig) -> Result<Vec<u8>> {
     let cfg = config.get_png_config();
     let (pixels, info) = decode_png(data)?;
     let color_chunks = extra_color_chunks(data);
@@ -55,6 +60,25 @@ pub async fn compress_png(data: &[u8], config: &CompressionConfig) -> Result<Vec
                 encode_png_pixels(&packed, &reduced_info, &cfg, config.preserve_metadata)
             {
                 consider(encoded);
+            }
+        }
+        // Exact palettes also help lossless PNGs such as icons and screenshots.
+        // Avoid changing sample-dependent metadata or an existing color key.
+        if info.bit_depth == BitDepth::Eight
+            && info.trns.is_none()
+            && info.sbit.is_none()
+            && info.bkgd.is_none()
+            && matches!(info.color_type, ColorType::Rgb | ColorType::Rgba)
+        {
+            if let Some(indexed) =
+                super::quantize::exact_palette(&pixels, info.color_type.samples(), 256)?
+            {
+                consider(encode_indexed(
+                    indexed,
+                    &info,
+                    &cfg,
+                    config.preserve_metadata,
+                )?);
             }
         }
     }
@@ -133,6 +157,24 @@ fn encode_png_pixels(
     cfg: &PngConfig,
     preserve_metadata: bool,
 ) -> Result<Vec<u8>> {
+    let mut best = encode_png_pixels_filtered(pixels, source_info, cfg, preserve_metadata, true)?;
+    if source_info.color_type == ColorType::Indexed && cfg.compression_level >= 4 {
+        let adaptive =
+            encode_png_pixels_filtered(pixels, source_info, cfg, preserve_metadata, false)?;
+        if adaptive.len() < best.len() {
+            best = adaptive;
+        }
+    }
+    Ok(best)
+}
+
+fn encode_png_pixels_filtered(
+    pixels: &[u8],
+    source_info: &png::Info<'_>,
+    cfg: &PngConfig,
+    preserve_metadata: bool,
+    unfiltered_palette: bool,
+) -> Result<Vec<u8>> {
     let mut info = source_info.clone();
     if !preserve_metadata {
         info.exif_metadata = None;
@@ -146,7 +188,11 @@ fn encode_png_pixels(
     let mut output = Vec::new();
     {
         let mut encoder = Encoder::with_info(&mut output, info).map_err(png_encode_error)?;
-        configure_encoder(&mut encoder, cfg);
+        configure_encoder(
+            &mut encoder,
+            cfg,
+            unfiltered_palette && source_info.color_type == ColorType::Indexed,
+        );
         let mut writer = encoder.write_header().map_err(png_encode_error)?;
         // png 0.17 exposes these fields while omitting them from Info::encode.
         // bKGD belongs after the palette and before the image data.
@@ -177,13 +223,20 @@ fn png_encode_error(error: png::EncodingError) -> CompressionError {
     }
 }
 
-fn configure_encoder<W: std::io::Write>(encoder: &mut Encoder<'_, W>, cfg: &PngConfig) {
+fn configure_encoder<W: std::io::Write>(
+    encoder: &mut Encoder<'_, W>,
+    cfg: &PngConfig,
+    indexed: bool,
+) {
     encoder.set_compression(match cfg.compression_level {
         0..=2 => Compression::Fast,
         3..=6 => Compression::Default,
         _ => Compression::Best,
     });
-    if cfg.compression_level >= 4 {
+    if indexed {
+        // Palette indices are labels, so differencing adjacent values is usually counterproductive.
+        encoder.set_filter(FilterType::NoFilter);
+    } else if cfg.compression_level >= 4 {
         encoder.set_adaptive_filter(AdaptiveFilterType::Adaptive);
     } else if cfg.compression_level >= 2 {
         encoder.set_filter(FilterType::Sub);
@@ -216,13 +269,41 @@ fn compress_png_quantized(
             _ => 1,
         },
     )?;
-    let palette = indexed.palette;
-    let pixels = indexed.indices;
     drop(rgba_img);
+
+    encode_indexed(indexed, source_info, cfg, preserve_metadata)
+}
+
+fn encode_indexed(
+    indexed: super::quantize::IndexedPixels,
+    source_info: &png::Info<'_>,
+    cfg: &PngConfig,
+    preserve_metadata: bool,
+) -> Result<Vec<u8>> {
+    let palette = indexed.palette;
+    let mut pixels = indexed.indices;
 
     let mut info = source_info.clone();
     info.color_type = ColorType::Indexed;
-    info.bit_depth = BitDepth::Eight;
+    info.bit_depth = match palette.len() {
+        0..=2 => BitDepth::One,
+        3..=4 => BitDepth::Two,
+        5..=16 => BitDepth::Four,
+        _ => BitDepth::Eight,
+    };
+    // Sub-byte PNG samples are MSB-first and every row starts on a byte boundary.
+    let bits = info.bit_depth as usize;
+    if bits < 8 {
+        let width = info.width as usize;
+        let row_bytes = (width * bits).div_ceil(8);
+        let mut packed = vec![0; row_bytes * info.height as usize];
+        for (y, row) in pixels.chunks_exact(width).enumerate() {
+            for (x, &index) in row.iter().enumerate() {
+                packed[y * row_bytes + x * bits / 8] |= index << (8 - bits - x * bits % 8);
+            }
+        }
+        pixels = packed;
+    }
     info.sbit = None;
     info.bkgd = None;
     info.palette = Some(

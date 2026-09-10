@@ -230,6 +230,7 @@ pub fn encode_image(
         OutputFormat::Png => {
             let cfg = config.get_png_config();
             encode_png_image(img, &cfg, &mut output)?;
+            output = png::optimize_png(&output, config)?;
         }
         OutputFormat::Jpeg => {
             let cfg = config.get_jpeg_config();

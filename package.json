@@ -1,6 +1,6 @@
 {
   "name": "multimicromedia",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pure Rust WebAssembly media compression with optional FFmpeg bridges",
   "license": "MIT",
   "type": "module",

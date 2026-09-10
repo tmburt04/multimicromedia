@@ -108,7 +108,7 @@ const config = create_config().quality(80).output_format('jpeg').resize(1200, nu
 
 ## Formats and behavior
 
-- **Raster:** PNG, JPEG, WebP, GIF, BMP, TIFF and ICO. TIFF/ICO compression handles one selected image. Untransformed PNG optimization can reduce channels and optionally quantize colors; PNG quantization settings do not apply to the generic transform/conversion path.
+- **Raster:** PNG, JPEG, WebP, GIF, BMP, TIFF and ICO. TIFF/ICO compression handles one selected image. PNG optimization can reduce channels, construct exact lossless palettes, and optionally quantize colors. PNG settings also apply after resize, crop and conversion to PNG.
 - **Animation:** GIF frames are processed incrementally with timing and loop settings. Animated PNG/WebP are returned unchanged; their transforms and format conversions are rejected. Animated GIF conversion and detected AVIF/HEIC image sequences are rejected to avoid discarding frames.
 - **AVIF/HEIC still images:** require an FFmpeg decoder. Default output is WebP for AVIF and JPEG for HEIC. AVIF/HEIC encoding is unavailable. Ambiguous HEIF dimensions may be omitted.
 - **SVG:** removes parsed comments when both `svg.minify` and `svg.remove_comments` are enabled, and can recompress supported base64 image data URIs. Other text, IDs, CSS and whitespace are preserved. SVG rasterization and transforms are unavailable.
@@ -124,6 +124,19 @@ With no explicit output format, audio stream copy retains the source audio conta
 Nonzero video trim starts require re-encoding; preflight rejects them with video stream copy because the requested start may have no independently decodable keyframe. The supplied bridges decode the first video/audio frame of stream-copy outputs before returning them, within the remaining execution timeout. This catches muxers that report success for unusable output; it adds remux overhead and requires a decoder. It is not a full-file integrity check.
 
 Metadata preservation is best effort. Untransformed PNG optimization retains supported color/HDR, text and EXIF fields; unknown ancillary chunks and metadata across transforms/conversions may be lost. WebP encoding is always lossless. JPEG quality affects encoding, but progressive/Huffman/subsampling settings are compatibility fields.
+
+### PNG size and quality
+
+The library defaults to lossless PNG compression. Already-optimized PNGs may have little remaining lossless savings; JPEG and color-quantized PNG can trade pixel accuracy for smaller files. To enable PNG color reduction explicitly:
+
+```javascript
+const result = await compress(bytes, JSON.stringify({
+  output_format: 'png',
+  png: { quantize: true, max_colors: 256, compression_level: 9 }
+}));
+```
+
+Use `quantize: false` for lossless pixel preservation without transforms. Color reduction can change gradients, alpha values and 16-bit precision. The palette candidate uses up to `max_colors`; a smaller lossless candidate or the original may still win. PNG `quality` controls encoding effort when no `png` settings are supplied; it does not choose a lossy color count. The browser bench exposes a **PNG Compression** selector and defaults to its clearly labeled lossy mode. Select **Lossless** to preserve pixels.
 
 Other compatibility fields currently unused by encoding are `input_hint`, `png.interlaced`, `webp.quality/lossless/method`, `avif.*`, `gif.lossy/optimize_frames` and `svg.precision`. `gif.max_colors` applies only to the static GIF quantization candidate. `chunk_size_mb` does not enable automatic streaming. Accepted settings are not all implemented; validation warnings are not exhaustive.
 
@@ -169,6 +182,8 @@ Regenerate a report or compare matching configurations without recompressing:
 ```bash
 node scripts/benchmark-report.mjs target/benchmarks/current.json target/benchmarks/previous.json
 ```
+
+For focused PNG measurements, run `node scripts/benchmark-png.mjs --label=current` after building Node bindings. It generates small-color RGB/RGBA and textured PNGs, and includes 16-bit sources when the full benchmark fixtures are available. Independent FFmpeg decoding compares lossless samples at their original depth; generated artifacts and reports remain under `target/png-patch/`. Pass `--wasm=path/to/mmm-node.js` to measure a saved build with the same inputs.
 
 ## Memory and storage
 

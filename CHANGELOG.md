@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1] — 2026-09-09
+
+- Fix PNG quantization being ignored after resize, crop and conversion to PNG. All still PNG encoding paths now consider the configured palette candidate.
+- Improve lossless RGB/RGBA PNGs with exact palettes, and pack small palettes into 1-, 2- or 4-bit rows. Compare unfiltered and adaptive-filter palette encodings, retaining the smaller result.
+- Add a visible PNG compression mode to the browser bench. Its default is explicitly labeled lossy color reduction (up to 256 colors); users can select lossless pixel preservation. The library API remains lossless by default. The quality slider controls PNG encoding effort, not color count.
+- Add a reproducible PNG benchmark with independent decoding and exact lossless pixel comparisons, including transparency, odd-width packed rows and 16-bit inputs. The output-size ceiling remains in force; PNG compression cannot guarantee savings on every source.
+- Verify 112 focused configurations and the full 1,967-configuration matrix: no lossless sample changes in the focused run, no new execution errors, no oversized returns and no changed outputs rejected by decoding. In Chrome, one already losslessly compressed synthetic PNG shrank from 682 KB to 177 KB (74%) with color reduction; lossless mode left it unchanged.
+
 ## [0.2.0] — 2026-09-09
 
 ### Compatibility and migration

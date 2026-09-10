@@ -209,7 +209,7 @@ pub enum ChromaSubsampling {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-/// Quantization/color limits apply to untransformed PNG input only.
+/// Quantization/color limits apply to still PNG output, including transforms and conversions.
 /// `interlaced` is retained for compatibility; output is non-interlaced.
 #[serde(deny_unknown_fields)]
 pub struct PngConfig {

@@ -399,6 +399,13 @@ function buildConfig(forBatch = false) {
 
     const outputFormat = document.getElementById('output-format').value;
     if (outputFormat) config.output_format = outputFormat;
+    if (imageOptions) {
+        config.png = {
+            quantize: document.getElementById('png-mode').value === 'quantize',
+            compression_level: Math.max(1, Math.floor(config.quality * 9 / 100)),
+            max_colors: 256
+        };
+    }
 
     const resizeWidth = document.getElementById('resize-width').value;
     const resizeHeight = document.getElementById('resize-height').value;
